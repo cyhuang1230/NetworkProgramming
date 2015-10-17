@@ -15,6 +15,8 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <signal.h>
+#include <unistd.h>
+#include <cstring>
 using namespace std;
 
 namespace NP {
@@ -68,10 +70,9 @@ int main(int argc, const char * argv[]) {
 	}
 	
     // SIGCHLD to prevnet zombie process
-    struct sigaction sigchld_action = {
-        .sa_handler = SIG_DFL,
-        .sa_flags = SA_NOCLDWAIT
-    };
+	struct sigaction sigchld_action;
+	sigchld_action.sa_handler = SIG_DFL;
+	sigchld_action.sa_flags = SA_NOCLDWAIT;
     sigaction(SIGCHLD, &sigchld_action, NULL);
     
 #ifdef DEBUG
