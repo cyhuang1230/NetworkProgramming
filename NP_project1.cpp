@@ -14,6 +14,7 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <signal.h>
 using namespace std;
 
 namespace NP {
@@ -34,6 +35,20 @@ namespace NP {
 		perror(str.c_str());
 		exit(1);
 	}
+    
+    void processRequest(int);
+    
+    void writeWrapper(int sockfd, const char buffer[], size_t size) {
+
+        int n = write(sockfd, buffer, size);
+#ifdef DEBUG
+        NP::log("write(size = " + to_string(size) + ", n = " + to_string(n) + "): \n" + string(buffer));
+#endif
+        
+        if (n < 0) {
+            NP::err("write error: " + string(buffer));
+        }
+    }
 }
 
 int main(int argc, const char * argv[]) {
@@ -52,6 +67,13 @@ int main(int argc, const char * argv[]) {
 		portnum = atoi(argv[1]);
 	}
 	
+    // SIGCHLD to prevnet zombie process
+    struct sigaction sigchld_action = {
+        .sa_handler = SIG_DFL,
+        .sa_flags = SA_NOCLDWAIT
+    };
+    sigaction(SIGCHLD, &sigchld_action, NULL);
+    
 #ifdef DEBUG
 	NP::log("Starting server using port: " + to_string(portnum));
 #endif
@@ -88,11 +110,41 @@ int main(int argc, const char * argv[]) {
 		if (newsockfd < 0) {
 			NP::err("accept error");
 		}
-		// @TODO: Double fork / SIGCHLD to prevent zombie process.
-		if ((childpid = fork()) < 0) {
-			
-		}
+
+        if ((childpid = fork()) < 0) {
+        
+            NP::err("fork error");
+
+        } else if (childpid == 0) { // child process
+            
+            close(sockfd);
+            
+            NP::processRequest(newsockfd);
+            
+            exit(0);
+            
+        } else {
+            
+            close(newsockfd);
+            
+        }
 	}
 	
+    
+    
 	return 0;
+}
+
+void NP::processRequest(int sockfd) {
+    
+    int n;
+    string str;
+    
+    // Welcome msg
+    const char buffer[] = "\
+**************************************** \n\
+** Welcome to the information server. ** \n\
+****************************************";
+    NP::writeWrapper(sockfd, buffer, sizeof(buffer));
+    
 }
