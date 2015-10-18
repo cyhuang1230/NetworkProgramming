@@ -144,8 +144,8 @@ int main(int argc, const char * argv[]) {
 	}
 
 	/**
-	*	Bind
-	*/
+	 *  Bind
+	 */
 	bzero((char*)&serv_addr, sizeof(serv_addr));
 	serv_addr.sin_family = AF_INET;
 	serv_addr.sin_addr.s_addr = htonl(INADDR_ANY);
@@ -156,12 +156,12 @@ int main(int argc, const char * argv[]) {
 	}
 	
 	/**
-	 *	Listen
+	 *  Listen
 	 */
 	listen(sockfd, 5);
 	
 	/**
-	 *	Accept
+	 *  Accept
 	 */
 	while (1) {
 		
@@ -215,6 +215,6 @@ void NP::processRequest(int sockfd) {
 	}
 	
 #ifdef DEBUG
-	NP::log("exit deteced.");
+	NP::log("exit detected.");
 #endif
 }
