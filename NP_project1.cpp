@@ -186,7 +186,6 @@ int main(int argc, const char * argv[]) {
         } else {
             
             close(newsockfd);
-            
         }
 	}
 	
@@ -209,8 +208,10 @@ void NP::processRequest(int sockfd) {
 ****************************************\n";
     NP::writeWrapper(sockfd, welcomeMsg, sizeof(welcomeMsg));
 
+	// read cmd
 	while ((str = NP::readWrapper(sockfd)).find("exit") == string::npos) {
 		
+		NP::CommandLine cmdLine = CommandLine();
 		
 	}
 	
