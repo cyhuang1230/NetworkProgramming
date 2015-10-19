@@ -1,13 +1,9 @@
-//
-//  main.cpp
-//  NP_Project1_CPP
-//
-//  Created by Denny H. on 10/15/15.
-//  Copyright © 2015 Denny H. All rights reserved.
-//
+//  NCTU CS. Network Programming Assignment 1
+//  by Denny Chien-Yu Huang.
 
 #include <string>
 #include <iostream>
+#include <sstream>
 #include <fstream>
 #include <stdio.h>
 #include <stdlib.h>
@@ -26,15 +22,19 @@ using namespace std;
 char buffer[MAX_SIZE];
 
 namespace NP {
-	void log(string str, bool error = 0) {
+	void log(string str, bool error = false, bool newline = true, bool prefix = true) {
 		
-		if (error) {
+		if (error && prefix) {
 			cout << "ERROR: ";
-		} else {
+		} else if (prefix) {
 			cout << "LOG: ";
 		}
 		
-		cout << str << endl;
+		cout << str;
+        if (newline) {
+            cout << endl;
+        }
+        
 		cout.flush();
 	}
 	
@@ -45,7 +45,7 @@ namespace NP {
 		exit(1);
 	}
     
-    void processRequest(int);
+    bool processRequest(int);
 	
 	/**
 	 *  Set buffer content
@@ -66,6 +66,7 @@ namespace NP {
 	
     void writeWrapper(int sockfd, const char buffer[], size_t size) {
 
+        resetBuffer();
         int n = write(sockfd, buffer, size);
 #ifdef DEBUG
         NP::log("write(size = " + to_string(size) + ", n = " + to_string(n) + "): \n" + string(buffer));
@@ -92,25 +93,79 @@ namespace NP {
 
 		return string(buffer);
 	}
-	
+    
 	/// Individual command
 	class Command {
 	public:
 		const char* name;	// command name
 		const char* arg;	// arguments
-		int stdoutOutput = 0;	// stdout to next `stdoutOutput` cmd
-		int stderrOutput = 0;	// stderr to next `stderrOutput` cmd
+		// stdout/err to next N row; -1 indicates no output; 0 means next cmd;
+        int stdoutToRow = -1;
+        int stderrToRow = -1;
+        
+        Command(const char* name, const char* arg, int stdoutRow, int stderrRow): name(name), arg(arg), stdoutToRow(stdoutRow), stderrToRow(stderrRow){}
+        
+        Command(const char* name, const char* arg, int stdoutRow) {
+            Command(name, arg, stdoutRow, -1);
+        }
+        
+        Command(const char* name, const char* arg) {
+            Command(name, arg, -1, -1);
+        }
+        
+        static bool isCommandValid(const char* cmd) {
+            
+            // dont block setenv
+            if (strcmp(cmd, "setenv") == 0) {
+#ifdef DEBUG
+                NP::log("isCommandValid: setenv -> pass");
+#endif
+                return true;
+            }
+            
+            const char* kPath = getenv("PATH");
+            
+            // to get SAME path, we need to make a copy of this.
+            char* path = new char[strlen(kPath)+1];
+            strcpy(path, kPath);
+#ifdef DEBUG
+            NP::log("isCommandValid: " + string(cmd) + " [PATH: " + string(path) + "]");
+#endif
+
+            char* token = strtok(path, ":");
+            while (token != NULL) {
+
+                char* file = new char[strlen(token) + 1 + strlen(cmd) +1];
+                strcpy(file, token);
+                strcat(file, "/");
+                strcat(file, cmd);
+#ifdef DEBUG
+                NP::log("trying " + string(file), 0, 0);
+#endif
+                if (!access(file, X_OK)) {
+#ifdef DEBUG
+                    NP::log("... true.", 0, 1, 0);
+#endif
+                    return true;
+                }
+#ifdef DEBUG
+                NP::log("... false.", 0, 1, 0);
+#endif
+                token = strtok(NULL, ":");
+            }
+#ifdef DEBUG
+            NP::log("No matching file. -> Invalid command.");
+#endif
+            return false;
+        }
 	};
 	
 	/// The whole command line
 	class CommandLine {
 	public:
-		vector<Command> cmds;	// not suppose to change the order (i.e. append only) to prevent error
-		int numberSuppose = 0;	// the number of cmds that suppose to have
-		int numberGot = 0;		// the number of cmds that got so far
-		
-		
-	};
+		vector<vector<Command>> cmds;	// not suppose to change the order (i.e. append only) to prevent error
+        int inputLinesLeft = 1; // the number of lines to input
+    };
 }
 
 int main(int argc, const char * argv[]) {
@@ -179,7 +234,16 @@ int main(int argc, const char * argv[]) {
             
             close(sockfd);
             
-            NP::processRequest(newsockfd);
+            // Welcome msg
+            char welcomeMsg[] = "\
+**************************************** \n\
+** Welcome to the information server. ** \n\
+****************************************\n";
+            NP::writeWrapper(newsockfd, welcomeMsg, sizeof(welcomeMsg));
+            
+            while (!NP::processRequest(newsockfd)) {
+                
+            }
             
             exit(0);
             
@@ -196,26 +260,100 @@ int main(int argc, const char * argv[]) {
  *  Process connection request
  *
  *  @param sockfd
+ *
+ *  @return boolean value that indicates if we should exit
  */
-void NP::processRequest(int sockfd) {
+bool NP::processRequest(int sockfd) {
     
+    // create a cmd line for this input
+    NP::CommandLine cl = CommandLine();
     string str;
+    bool needExit = false;
     
-    // Welcome msg
-	char welcomeMsg[] = "\
-**************************************** \n\
-** Welcome to the information server. ** \n\
-****************************************\n";
-    NP::writeWrapper(sockfd, welcomeMsg, sizeof(welcomeMsg));
-
 	// read cmd
-	while ((str = NP::readWrapper(sockfd)).find("exit") == string::npos) {
-		
-		NP::CommandLine cmdLine = CommandLine();
-		
+	while (cl.inputLinesLeft--) {
+        
+        str = NP::readWrapper(sockfd);
+
+//        if ((str = NP::readWrapper(sockfd)).find("exit") == string::npos) {
+//#ifdef DEBUG
+//            NP::log("exit detected.");
+//#endif
+//            needExit = true;
+//            break;
+//        }
+        
+        if (str.empty()) {  // empty string
+            continue;
+        }
+        
+        /**
+         *  Parse Input
+         */
+#ifdef DEBUG
+        NP::log("Parsing input... ");
+#endif
+        // declare a array to store current cmds
+        vector<Command> curCl;
+        
+        string buffer;
+        stringstream ss = stringstream(str);
+        while (ss >> buffer) {
+            
+            const char* buffer_cstr = buffer.c_str();
+            
+#ifdef DEBUG
+            NP::log(buffer);
+#endif
+            if (!NP::Command::isCommandValid(buffer_cstr)) {    // invalid cmd
+                
+#ifdef DEBUG
+                NP::log(" -> invalid cmd");
+#endif
+                string prefix = "Unknown command: [";
+                string suffix = "].\n";
+                string msg = prefix + buffer + suffix;
+                NP::writeWrapper(sockfd, msg.c_str(), msg.length());
+                
+                break;
+                
+            } else {    // valid cmd
+                // @TODO
+//                curCl.push_back();
+        
+            }
+        }
+        
+#ifdef DEBUG
+        NP::log("End of parsing.");
+#endif
+        
+        if (curCl.empty()) {
+            
+#ifdef DEBUG
+            NP::log("curCl empty -> continue.");
+#endif
+            
+            // if curCl is empty -> the first cmd is invalid
+            // -> dont process this row
+            continue;
+            
+        } else {
+            
+#ifdef DEBUG
+            NP::log("curCl nonempty -> push back.");
+#endif
+            // otherwise, push back this row
+            cl.cmds.push_back(curCl);
+        }
 	}
 	
-#ifdef DEBUG
-	NP::log("exit detected.");
-#endif
+//    if (needExit) {
+//        return;
+//    }
+    
+    // @TODO: execute cmd
+    // @TODO: need to determine `exit` cmd
+    
+    return false;
 }
