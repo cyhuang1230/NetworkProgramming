@@ -9,19 +9,26 @@
 #include <stdlib.h>
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <sys/wait.h>
 #include <netinet/in.h>
 #include <signal.h>
 #include <unistd.h>
 #include <cstring>
+#include <algorithm>
 #include <vector>
 using namespace std;
 
 #define DEBUG
 
 #define MAX_SIZE 15001
+#define DEFAULT_PORT 4410
 char buffer[MAX_SIZE];
 
 namespace NP {
+    
+    class Command;
+    class CommandLine;
+    
 	void log(string str, bool error = false, bool newline = true, bool prefix = true) {
 		
 		if (error && prefix) {
@@ -37,7 +44,23 @@ namespace NP {
         
 		cout.flush();
 	}
-	
+    
+    void log_ch(char* ch, bool error = false, bool newline = true, bool prefix = true) {
+        
+        if (error && prefix) {
+            printf("ERROR: ");
+        } else if (prefix) {
+            printf("LOG: ");
+        }
+        
+        printf("%s", ch);
+        if (newline) {
+            printf("\n");
+        }
+        
+        fflush(stdout);
+    }
+    
 	void err(string str) {
 
 		log(str, true);
@@ -94,29 +117,53 @@ namespace NP {
 		return string(buffer);
 	}
     
+    void prepareChildHead(int, const int, vector<int*>&, vector<Command>&);
+    
 	/// Individual command
 	class Command {
 	public:
-		const char* name;	// command name
-		const char* arg;	// arguments
-		// stdout/err to next N row; -1 indicates no output; 0 means next cmd;
+//		const char* name;	// command name
+//		const char* arg;	// arguments
+        vector<string> arg;
+		// stdout/err to next N row; -1 indicates sockfd; 0 means next cmd;
         int stdoutToRow = -1;
         int stderrToRow = -1;
+        int sockfd;
         
-        Command(const char* name, const char* arg, int stdoutRow, int stderrRow): name(name), arg(arg), stdoutToRow(stdoutRow), stderrToRow(stderrRow){}
+//        Command(const char* name, const char* arg, int stdoutRow, int stderrRow): name(name), arg(arg), stdoutToRow(stdoutRow), stderrToRow(stderrRow){}
+//        
+//        Command(const char* name, const char* arg, int stdoutRow) {
+//            Command(name, arg, stdoutRow, -1);
+//        }
+//        
+//        Command(const char* name, const char* arg) {
+//            Command(name, arg, -1, -1);
+//        }
         
-        Command(const char* name, const char* arg, int stdoutRow) {
-            Command(name, arg, stdoutRow, -1);
+        Command(const char* name, int sockfd): sockfd(sockfd) {
+            appendArg(name);
         }
         
-        Command(const char* name, const char* arg) {
-            Command(name, arg, -1, -1);
+        void appendArg(const char* ch) {
+            arg.push_back(ch);
+        }
+        
+        void appendArg(string str) {
+            arg.push_back(str.c_str());
+        }
+        
+        string to_string() {
+            string str = "";
+            for (int i = 0; i < arg.size(); i++) {
+                str.append(arg[i] + " ");
+            }
+            return str;
         }
         
         static bool isCommandValid(const char* cmd) {
             
             // dont block setenv
-            if (strcmp(cmd, "setenv") == 0) {
+            if (strncmp(cmd, "setenv", 6) == 0) {
 #ifdef DEBUG
                 NP::log("isCommandValid: setenv -> pass");
 #endif
@@ -126,37 +173,71 @@ namespace NP {
             const char* kPath = getenv("PATH");
             
             // to get SAME path, we need to make a copy of this.
-            char* path = new char[strlen(kPath)+1];
+            int kPathLen = strlen(kPath);
+            char* path = new char[kPathLen+1];
             strcpy(path, kPath);
+            //            path[kPathLen] = '\0';
+            
 #ifdef DEBUG
-            NP::log("isCommandValid: " + string(cmd) + " [PATH: " + string(path) + "]");
+//            NP::log("isCommandValid: " + string(cmd) + " [PATH: " + string(path) + "]");
+            NP::log("kPathLen = " + std::to_string(kPathLen));
+            NP::log_ch(path);
 #endif
 
             char* token = strtok(path, ":");
             while (token != NULL) {
-
-                char* file = new char[strlen(token) + 1 + strlen(cmd) +1];
+                
+                int len = strlen(token) + 1 + strlen(cmd);
+                char* file = new char[len+1];
                 strcpy(file, token);
                 strcat(file, "/");
                 strcat(file, cmd);
+                *remove(file, file+len, '\r') = '\0';
+//                file[len] = '\0';
+                
 #ifdef DEBUG
-                NP::log("trying " + string(file), 0, 0);
+                NP::log("Processing token: (len = " + std::to_string(strlen(token)) + "+1+" + std::to_string(strlen(cmd)) + "=" + std::to_string(len) + ")", 0, 1, 0);
+                NP::log_ch(token, 0, 1);
+                NP::log("trying ", 0, 0);
+                NP::log_ch(file, 0, 0, 0);
+//                for (int i = 0; file[i] != '\0'; i++) {
+//                    NP::log("[" + std::to_string(i) + "] " + std::to_string((char)file[i]));
+//                }
+                NP::log("...", 0, 0, 0);
 #endif
-                if (!access(file, X_OK)) {
+                if (access(file, X_OK) == 0) {
 #ifdef DEBUG
-                    NP::log("... true.", 0, 1, 0);
+                    NP::log("true.", 0, 1, 0);
 #endif
+//                    delete[] file;
+//                    delete[] path;
                     return true;
                 }
 #ifdef DEBUG
-                NP::log("... false.", 0, 1, 0);
+                NP::log("false, due to " + std::to_string(errno), 0, 1, 0);
 #endif
+//                delete[] file;
                 token = strtok(NULL, ":");
             }
 #ifdef DEBUG
             NP::log("No matching file. -> Invalid command.");
 #endif
+//            delete[] path;
             return false;
+        }
+        
+        char* const* toArgArray() {
+            
+            int len = arg.size();
+            char** arr = new char*[len+1];
+            
+            for (int i = 0; i < len; i++) {
+                arr[i] = new char[arg[i].size()+1];
+                strcpy(arr[i], arg[i].c_str());
+            }
+            arr[len] = (char *)0;
+            
+            return arr;
         }
 	};
 	
@@ -176,7 +257,7 @@ int main(int argc, const char * argv[]) {
 
 	if (argc < 2) {	// if no port provided
 		
-		portnum = 4410;
+		portnum = DEFAULT_PORT;
 		
 	} else {
 		
@@ -267,13 +348,14 @@ bool NP::processRequest(int sockfd) {
     
     // create a cmd line for this input
     NP::CommandLine cl = CommandLine();
-    string str;
+    string strLine;
     bool needExit = false;
+    bool needExecute = true;
     
 	// read cmd
 	while (cl.inputLinesLeft--) {
         
-        str = NP::readWrapper(sockfd);
+        strLine = NP::readWrapper(sockfd);
 
 //        if ((str = NP::readWrapper(sockfd)).find("exit") == string::npos) {
 //#ifdef DEBUG
@@ -283,7 +365,7 @@ bool NP::processRequest(int sockfd) {
 //            break;
 //        }
         
-        if (str.empty()) {  // empty string
+        if (strLine.empty()) {  // empty string
             continue;
         }
         
@@ -295,37 +377,105 @@ bool NP::processRequest(int sockfd) {
 #endif
         // declare a array to store current cmds
         vector<Command> curCl;
+        bool shouldCurStrBeCmd = true;  // indicates if the current string is a cmd (else is a arg)
         
-        string buffer;
-        stringstream ss = stringstream(str);
-        while (ss >> buffer) {
+        if (strLine.find("setenv") != string::npos && strLine.find("PATH", 7) != string::npos) {
+//            string dir = "/Users/ChienyuHuang/ras";
+//            string path = dir + string("/") + strLine.substr(12);
+            string path = get_current_dir_name() + string("/") + strLine.substr(12);
+            path = path.substr(0, path.length()-1);
+//            @TODO: trim '\n'
+#ifdef DEBUG
+            NP::log("setenv detected! with path: " + string(path.c_str()));
+#endif
+            if(setenv("PATH", path.c_str(), 1) == -1) {
+                NP::err("setenv error, with path: " + string(path.c_str()));
+            }
             
-            const char* buffer_cstr = buffer.c_str();
+            needExecute = false;
+            break;
+        }
+        
+        if (strLine.find("exit") != string::npos) {
+            needExit = true;
+            break;
+        }
+        
+        string curStr;
+        stringstream ss = stringstream(strLine);
+        while (ss >> curStr) {
+            
+            const char* curStr_cstr = curStr.c_str();
             
 #ifdef DEBUG
-            NP::log(buffer);
+            NP::log(curStr);
 #endif
-            if (!NP::Command::isCommandValid(buffer_cstr)) {    // invalid cmd
+            if (curStr[0] == '|') { // pipe
+                
+                if (curCl.empty()) {    // no cmd to pipe
+                    break;
+                }
+                
+                // simple `|`
+                // @WARNING not implemented for `!`
+                if (curStr.length() == 1) {
+                    
+                    curCl.back().stdoutToRow = 0;
+                    
+                } else {
+                    
+                    int extraLine = atoi(curStr.substr(1).c_str());
+                    curCl.back().stdoutToRow = extraLine;
+                    cl.inputLinesLeft += extraLine;
+                }
+                
+                shouldCurStrBeCmd = true;
+                
+            } else if (curStr[0] == '!') {
+            
+                int extraLine = atoi(curStr.substr(1).c_str());
+                curCl.back().stderrToRow = extraLine;
+                
+                if (cl.inputLinesLeft < extraLine) {
+                    cl.inputLinesLeft = extraLine;
+                }
+                
+            } else if (shouldCurStrBeCmd && !NP::Command::isCommandValid(curStr_cstr)) {    // invalid cmd
                 
 #ifdef DEBUG
                 NP::log(" -> invalid cmd");
 #endif
                 string prefix = "Unknown command: [";
                 string suffix = "].\n";
-                string msg = prefix + buffer + suffix;
+                string msg = prefix + curStr + suffix;
                 NP::writeWrapper(sockfd, msg.c_str(), msg.length());
                 
+                // no need to read futher cmds
                 break;
                 
             } else {    // valid cmd
-                // @TODO
-//                curCl.push_back();
+                
+                if (shouldCurStrBeCmd) {    // curStr is cmd
+                    
+                    Command curCmd = Command(curStr.c_str(), sockfd);
+                    curCl.push_back(curCmd);
+                    shouldCurStrBeCmd = false;
+#ifdef DEBUG
+                    NP::log(" -> valid cmd.... pushing back");
+#endif
+                } else {
+#ifdef DEBUG
+                    NP::log(" -> shouldCurStrBeCmd == false.... appending arg");
+#endif
+                    curCl.back().appendArg(curStr);
+                }
         
             }
         }
         
 #ifdef DEBUG
-        NP::log("End of parsing.");
+        NP::log("--------- End of parsing. ---------");
+        
 #endif
         
         if (curCl.empty()) {
@@ -348,12 +498,228 @@ bool NP::processRequest(int sockfd) {
         }
 	}
 	
-//    if (needExit) {
-//        return;
-//    }
+    if (needExit) {
+#ifdef DEBUG
+        NP::log("needExit -> return true");
+#endif
+        return true;
+        
+    } else if (!needExecute) {
+#ifdef DEBUG
+        NP::log("!needExecute -> return false");
+#endif
+        return false;
+    }
     
-    // @TODO: execute cmd
-    // @TODO: need to determine `exit` cmd
+    
+#ifdef DEBUG
+    NP::log("cl: ");
+    for (int i = 0; i < cl.cmds.size(); i++) {
+        for (int j = 0; j < cl.cmds[i].size(); j++) {
+            for (int k = 0; k < cl.cmds[i][j].arg.size(); k++) {
+                NP::log(cl.cmds[i][j].arg[k], 0, 0, 0);
+                NP::log(" ", 0, 0, 0);
+            }
+            NP::log("\n", 0, 0, 0);
+        }
+    }
+    NP::log("cl end.");
+    NP::log("Preparing to execute cmd...");
+#endif
+    
+    /**
+     *  Execute Command
+     *  
+     *  @TODO: need to determine `exit` cmd
+     *
+     */
+    
+    // Create pipe
+#ifdef DEBUG
+    NP::log("Creating pipes.....", 0, 0 ,1);
+#endif
+    int totalLine = cl.cmds.size();
+    vector<int*> pipes = vector<int*>(totalLine, NULL);
+    for (int i = 0; i < totalLine; i++) {
+        pipes[i] = new int[2];
+        if (pipe(pipes[i]) == -1) {
+            NP::err("pipe no. " + to_string(i) + "creation error");
+        }
+    }
+#ifdef DEBUG
+    NP::log("done", 0, 1, 0);
+    NP::log("Start forking child...");
+#endif
+    
+    for (int i = 0; i < totalLine; i++) {
+        
+        // fork child
+        switch (fork()) {
+            case -1:    // error
+                NP::err("fork error");
+                
+            case 0:     // child
+                NP::prepareChildHead(i, totalLine, pipes, cl.cmds[i]);
+                break;
+        }
+    }
+    
+    
+    // close parent's pipe (all)
+    for (int i = 0; i < totalLine; i++) {
+        if (close(pipes[i][0]) || close(pipes[i][1])) {
+            NP::err("parent close pipe error.");
+        }
+    }
+    
+    // parent has to wait
+    for (int i = 0; i < totalLine; i++) {
+        wait(NULL);
+    }
+
+    // free pipe
+    for (int i = 0; i < totalLine; i++) {
+        delete[] pipes[i];
+    }
     
     return false;
+}
+
+/**
+ *  prepare child head
+ *
+ *  @param curClNum     the cl number this child belongs to
+ *  @param totalLine total cl num
+ *  @param pipes     all pipes
+ *  @param cmds      commands that belong to this cl
+ */
+void NP::prepareChildHead(int curClNum, const int totalLine, vector<int*>& pipes, vector<Command>& cmds) {
+
+    /**
+     *  Prepare pipe: close unused pipe
+     */
+#ifdef DEBUG
+    NP::log("in prepareChildHead: Closing unused pipes.....", 0, 0 ,1);
+#endif
+    int stdoutToRow = cmds.back().stdoutToRow > 0 ? curClNum + cmds.back().stdoutToRow : -1;
+    int stderrToRow = cmds.back().stderrToRow > 0 ? curClNum + cmds.back().stderrToRow : -1;
+    for (int i = 0; i < totalLine; i++) {
+        
+        if (stdoutToRow == stderrToRow && stdoutToRow != -1) {
+            
+            // check if stdoutToRow and stderrToRow are the same
+            NP::err("in afterForkChild(): stdoutPipe == stderrPipe, with i = " + to_string(i));
+
+        } else if (i == stdoutToRow || i == stderrToRow) {
+            
+            // close write, left read only
+            if (!close(pipes[i][1])) {
+                NP::err("in afterForkChild(): close stdoutToRow or stderrToRow error, with i = " + to_string(i));
+            }
+            
+        } else if (i == curClNum) {
+            
+            // intentionally left blank
+            // Dont do anything to clNum
+            
+        } else {
+
+            // close other pipes
+            if (close(pipes[i][0]) || close(pipes[i][1])) {
+                NP::err("parent close pipe error.");
+            }
+        }
+    }
+#ifdef DEBUG
+    NP::log(" done", 0, 1, 0);
+    NP::log("in afterForkChild(): starting executing cmd....");
+#endif
+
+    /**
+     *  Fork: Start executing cmd
+     */
+    int cmdCount = cmds.size();
+    int pid;
+    for (int i = 0; i < cmdCount; i++) {
+
+        switch (pid = fork()) {
+            case -1: // error
+                NP::err("fork error");
+                
+            case 0: // child
+#ifdef DEBUG
+                NP::log("this is child. preparing pipe for " + cmds[i].arg[0] + "(" + to_string(cmds[i].stdoutToRow) + "," + to_string(cmds[i].stderrToRow) + ")");
+#endif
+                /**
+                 *  Prepare Pipe
+                 */
+                // stdout
+                if (cmds[i].stdoutToRow == -1) {    // stdout to sockfd
+                    
+                    if(dup2(cmds[i].sockfd, STDOUT_FILENO) == -1) {
+                        NP::err("dup2(cmds[i].sockfd, STDOUT_FILENO)");
+                    }
+
+                } else if (cmds[i].stdoutToRow == 0) {  // stdout to next cmd
+                    
+                    if(dup2(pipes[curClNum][1], STDOUT_FILENO) == -1) {
+                        NP::err("dup2(pipes[curClNum][1], STDOUT_FILENO)");
+                    }
+                    
+                } else {    // stdout to next N row
+                    
+                    if(dup2(pipes[curClNum+cmds[i].stdoutToRow][1], STDOUT_FILENO) == -1) {
+                        NP::err("dup2(pipes[curClNum+cmds[i].stdoutToRow][1], STDOUT_FILENO)");
+                    }
+                }
+                
+                // stderr
+                if (cmds[i].stdoutToRow == -1) {    // stderr to sockfd
+                    
+                    if(dup2(cmds[i].sockfd, STDERR_FILENO) == -1) {
+                        NP::err("dup2(cmds[i].sockfd, STDERR_FILENO)");
+                    }
+                    
+                } else if (cmds[i].stdoutToRow == 0) {  // stderr to next cmd
+                    
+                    if(dup2(pipes[curClNum][1], STDERR_FILENO) == -1) {
+                        NP::err("dup2(pipes[curClNum][1], STDERR_FILENO)");
+                    }
+                    
+                } else {    // stderr to next N row
+                    
+                    if(dup2(pipes[curClNum+cmds[i].stdoutToRow][1], STDERR_FILENO) == -1) {
+                        NP::err("dup2(pipes[curClNum+cmds[i].stdoutToRow][1], STDERR_FILENO)");
+                    }
+                }
+
+                // stdin
+                if(dup2(pipes[curClNum][0], STDIN_FILENO) == -1) {
+                    NP::err("dup2(pipes[curClNum][0], STDIN_FILENO)");
+                }
+
+#ifdef DEBUG
+                NP::log("this is child. Pipe ready. Executing...");
+                NP::log("Executing " + cmds[i].to_string());
+                NP::log("end of cmd list");
+#endif
+                //@TODO: not working when path is changed
+                if(execvp(cmds[i].arg[0].c_str(), cmds[i].toArgArray()) == -1) {
+                   NP::err("execvp error: " + cmds[i].arg[0] + ", with PATH: " + string(getenv("PATH")));
+                }
+                
+                NP::err("in prepareChildHead: fork: case 0 error");
+                
+            default:    // parent
+#ifdef DEBUG
+                NP::log("[parent] in prepareChildHead(): waitpid");
+#endif
+                waitpid(pid, NULL, 0);
+#ifdef DEBUG
+                NP::log("[parent] in prepareChildHead(): wait over");
+#endif
+                break;
+        }
+    }
+    
 }
