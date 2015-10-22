@@ -22,6 +22,7 @@ using namespace std;
 
 #define MAX_SIZE 15001
 #define DEFAULT_PORT 4410
+
 char buffer[MAX_SIZE];
 
 namespace NP {
@@ -32,9 +33,9 @@ namespace NP {
 	void log(string str, bool error = false, bool newline = true, bool prefix = true) {
 		
 		if (error && prefix) {
-			cout << "ERROR: ";
+			cout << "[" << getpid() << "] ERROR: ";
 		} else if (prefix) {
-			cout << "LOG: ";
+			cout << "[" << getpid() << "] LOG: ";
 		}
 		
 		cout << str;
@@ -300,9 +301,14 @@ int main(int argc, const char * argv[]) {
 	 *  Accept
 	 */
 	while (1) {
-		
+#ifdef DEBUG
+        NP::log("Waiting for connections...");
+#endif
 		clilen = sizeof(cli_addr);
 		newsockfd = ::accept(sockfd, (struct sockaddr *) &cli_addr, &clilen);
+#ifdef DEBUG
+        NP::log("Connection accepted");
+#endif
 		if (newsockfd < 0) {
 			NP::err("accept error");
 		}
@@ -322,11 +328,19 @@ int main(int argc, const char * argv[]) {
 ****************************************\n";
             NP::writeWrapper(newsockfd, welcomeMsg, sizeof(welcomeMsg));
             
-            while (!NP::processRequest(newsockfd)) {
+            do {
                 
-            }
+#ifdef DEBUG
+                NP::log("Waiting for new cmd input");
+#endif
+                
+            } while (!NP::processRequest(newsockfd));
             
-            exit(0);
+#ifdef DEBUG
+            NP::log("processRequest return true, leaving...");
+#endif
+            
+            exit(EXIT_SUCCESS);
             
         } else {
             
@@ -380,9 +394,12 @@ bool NP::processRequest(int sockfd) {
         bool shouldCurStrBeCmd = true;  // indicates if the current string is a cmd (else is a arg)
         
         if (strLine.find("setenv") != string::npos && strLine.find("PATH", 7) != string::npos) {
-//            string dir = "/Users/ChienyuHuang/ras";
-//            string path = dir + string("/") + strLine.substr(12);
+#ifdef LOCAL
+            string dir = "/Users/ChienyuHuang/ras";
+            string path = dir + string("/") + strLine.substr(12);
+#else
             string path = get_current_dir_name() + string("/") + strLine.substr(12);
+#endif
             path = path.substr(0, path.length()-1);
 //            @TODO: trim '\n'
 #ifdef DEBUG
@@ -717,8 +734,9 @@ void NP::prepareChildHead(int curClNum, const int totalLine, vector<int*>& pipes
                 waitpid(pid, NULL, 0);
 #ifdef DEBUG
                 NP::log("[parent] in prepareChildHead(): wait over");
+                NP::log("[parent] exit()");
 #endif
-                break;
+                exit(EXIT_SUCCESS);
         }
     }
     
