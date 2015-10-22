@@ -161,6 +161,62 @@ namespace NP {
             return str;
         }
         
+        static char* whereis(const char* cmd) {
+            
+            const char* kPath = getenv("PATH");
+
+#ifdef DEBUG
+            NP::log("whereis(" + string(cmd) +")");
+#endif
+            // to get SAME path, we need to make a copy of this.
+            int kPathLen = strlen(kPath);
+            char* path = new char[kPathLen+1];
+            strcpy(path, kPath);
+            
+//#ifdef DEBUG
+//            //            NP::log("isCommandValid: " + string(cmd) + " [PATH: " + string(path) + "]");
+//            NP::log("kPathLen = " + std::to_string(kPathLen));
+//            NP::log_ch(path);
+//#endif
+            
+            char* token = strtok(path, ":");
+            while (token != NULL) {
+                
+                int len = strlen(token) + 1 + strlen(cmd);
+                char* file = new char[len+1];
+                strcpy(file, token);
+                strcat(file, "/");
+                strcat(file, cmd);
+                *remove(file, file+len, '\r') = '\0';
+                
+//#ifdef DEBUG
+//                NP::log("Processing token: (len = " + std::to_string(strlen(token)) + "+1+" + std::to_string(strlen(cmd)) + "=" + std::to_string(len) + ")", 0, 1, 0);
+//                NP::log_ch(token, 0, 1);
+//                NP::log("trying ", 0, 0);
+//                NP::log_ch(file, 0, 0, 0);
+//                NP::log("...", 0, 0, 0);
+//#endif
+                if (access(file, X_OK) == 0) {
+#ifdef DEBUG
+                    NP::log("true.", 0, 1, 0);
+#endif
+                    delete[] path;
+                    
+                    return file;
+                }
+#ifdef DEBUG
+                NP::log("false, due to " + std::to_string(errno), 0, 1, 0);
+#endif
+                delete[] file;
+                token = strtok(NULL, ":");
+            }
+            
+            delete[] path;
+            NP::err("whereis: " + string(cmd) + " -> not found");
+            
+            return NULL;
+        }
+        
         static bool isCommandValid(const char* cmd) {
             
             // dont block setenv
@@ -171,60 +227,7 @@ namespace NP {
                 return true;
             }
             
-            const char* kPath = getenv("PATH");
-            
-            // to get SAME path, we need to make a copy of this.
-            int kPathLen = strlen(kPath);
-            char* path = new char[kPathLen+1];
-            strcpy(path, kPath);
-            //            path[kPathLen] = '\0';
-            
-#ifdef DEBUG
-//            NP::log("isCommandValid: " + string(cmd) + " [PATH: " + string(path) + "]");
-            NP::log("kPathLen = " + std::to_string(kPathLen));
-            NP::log_ch(path);
-#endif
-
-            char* token = strtok(path, ":");
-            while (token != NULL) {
-                
-                int len = strlen(token) + 1 + strlen(cmd);
-                char* file = new char[len+1];
-                strcpy(file, token);
-                strcat(file, "/");
-                strcat(file, cmd);
-                *remove(file, file+len, '\r') = '\0';
-//                file[len] = '\0';
-                
-#ifdef DEBUG
-                NP::log("Processing token: (len = " + std::to_string(strlen(token)) + "+1+" + std::to_string(strlen(cmd)) + "=" + std::to_string(len) + ")", 0, 1, 0);
-                NP::log_ch(token, 0, 1);
-                NP::log("trying ", 0, 0);
-                NP::log_ch(file, 0, 0, 0);
-//                for (int i = 0; file[i] != '\0'; i++) {
-//                    NP::log("[" + std::to_string(i) + "] " + std::to_string((char)file[i]));
-//                }
-                NP::log("...", 0, 0, 0);
-#endif
-                if (access(file, X_OK) == 0) {
-#ifdef DEBUG
-                    NP::log("true.", 0, 1, 0);
-#endif
-//                    delete[] file;
-//                    delete[] path;
-                    return true;
-                }
-#ifdef DEBUG
-                NP::log("false, due to " + std::to_string(errno), 0, 1, 0);
-#endif
-//                delete[] file;
-                token = strtok(NULL, ":");
-            }
-#ifdef DEBUG
-            NP::log("No matching file. -> Invalid command.");
-#endif
-//            delete[] path;
-            return false;
+            return Command::whereis(cmd) == NULL ? false : true;
         }
         
         char* const* toArgArray() {
@@ -649,7 +652,7 @@ void NP::prepareChildHead(int curClNum, const int totalLine, vector<int*>& pipes
     }
 #ifdef DEBUG
     NP::log(" done", 0, 1, 0);
-    NP::log("in afterForkChild(): starting executing cmd....");
+    NP::log("in afterForkChild(): starting executing " + to_string(cmds.size()) + " cmds....");
 #endif
 
     /**
@@ -691,13 +694,13 @@ void NP::prepareChildHead(int curClNum, const int totalLine, vector<int*>& pipes
                 }
                 
                 // stderr
-                if (cmds[i].stdoutToRow == -1) {    // stderr to sockfd
+                if (cmds[i].stderrToRow == -1) {    // stderr to sockfd
                     
                     if(dup2(cmds[i].sockfd, STDERR_FILENO) == -1) {
                         NP::err("dup2(cmds[i].sockfd, STDERR_FILENO)");
                     }
                     
-                } else if (cmds[i].stdoutToRow == 0) {  // stderr to next cmd
+                } else if (cmds[i].stderrToRow == 0) {  // stderr to next cmd
                     
                     if(dup2(pipes[curClNum][1], STDERR_FILENO) == -1) {
                         NP::err("dup2(pipes[curClNum][1], STDERR_FILENO)");
@@ -705,8 +708,8 @@ void NP::prepareChildHead(int curClNum, const int totalLine, vector<int*>& pipes
                     
                 } else {    // stderr to next N row
                     
-                    if(dup2(pipes[curClNum+cmds[i].stdoutToRow][1], STDERR_FILENO) == -1) {
-                        NP::err("dup2(pipes[curClNum+cmds[i].stdoutToRow][1], STDERR_FILENO)");
+                    if(dup2(pipes[curClNum+cmds[i].stderrToRow][1], STDERR_FILENO) == -1) {
+                        NP::err("dup2(pipes[curClNum+cmds[i].stderrToRow][1], STDERR_FILENO)");
                     }
                 }
 
@@ -720,9 +723,11 @@ void NP::prepareChildHead(int curClNum, const int totalLine, vector<int*>& pipes
                 NP::log("Executing " + cmds[i].to_string());
                 NP::log("end of cmd list");
 #endif
-                //@TODO: not working when path is changed
-                if(execvp(cmds[i].arg[0].c_str(), cmds[i].toArgArray()) == -1) {
-                   NP::err("execvp error: " + cmds[i].arg[0] + ", with PATH: " + string(getenv("PATH")));
+
+                if(execvp(NP::Command::whereis(cmds[i].arg[0].c_str()), cmds[i].toArgArray()) == -1) {
+                    string env = string(getenv("PATH"));
+                    *remove(env.begin(), env.end(), '\r') = '\0';
+                    NP::err("execvp error: " + cmds[i].arg[0] + ", with PATH: " + env);
                 }
                 
                 NP::err("in prepareChildHead: fork: case 0 error");
@@ -734,10 +739,12 @@ void NP::prepareChildHead(int curClNum, const int totalLine, vector<int*>& pipes
                 waitpid(pid, NULL, 0);
 #ifdef DEBUG
                 NP::log("[parent] in prepareChildHead(): wait over");
-                NP::log("[parent] exit()");
 #endif
-                exit(EXIT_SUCCESS);
         }
+
+        NP::log("[parent] exit()");
+        exit(EXIT_SUCCESS);
     }
-    
+
+
 }
