@@ -13,6 +13,9 @@
 #include <netinet/in.h>
 #include <signal.h>
 #include <unistd.h>
+//#include <sys/shm.h>
+#include <fcntl.h>
+#include <semaphore.h>
 #include <cstring>
 #include <algorithm>
 #include <vector>
@@ -21,7 +24,7 @@ using namespace std;
 #define DEBUG
 
 #define MAX_SIZE 15001
-#define DEFAULT_PORT 4411
+#define DEFAULT_PORT 4412
 
 char buffer[MAX_SIZE];
 
@@ -119,6 +122,32 @@ namespace NP {
 	}
     
     void prepareChildHead(int, const int, vector<int*>&, vector<Command>&);
+    
+    void dup2(const int newfd, const int oldfd) {
+        
+        if (::dup2(newfd, oldfd) == -1) {
+            NP::err("dup2(" + to_string(newfd) + "," + to_string(oldfd) + ") errror " + to_string(errno));
+        }
+        
+        NP::log("dup2(" + to_string(newfd) + "," + to_string(oldfd) + ") done");
+    }
+    
+    void close(const int fd, const int i, const int j, string errmsg = "", string sucmsg = "") {
+
+        if (::close(fd) == -1) {
+
+            if (errmsg.empty()) {
+            
+                NP::err("close pipes[" + to_string(i) + "][" + to_string(j) + "] error " + to_string(errno));
+                
+            } else {
+                
+                NP::err(errmsg);
+            }
+        }
+        
+        sucmsg.empty() ? NP::log("close pipes[" + to_string(i) + "][" + to_string(j) + "]") : NP::log(sucmsg);
+    }
     
 	/// Individual command
 	class Command {
@@ -568,6 +597,7 @@ bool NP::processRequest(int sockfd) {
                 NP::err("fork error");
                 
             case 0:     // child
+            {
                 // Create pipe
 #ifdef DEBUG
                 NP::log("Creating pipes.....", 0, 0 ,1);
@@ -585,6 +615,19 @@ bool NP::processRequest(int sockfd) {
 #endif
                 NP::prepareChildHead(i, totalLine, pipes, cl.cmds[i]);
                 break;
+            }
+                
+            default:
+                // parent has to wait
+#ifdef DEBUG
+                NP::log("parent waiting for pid " + to_string(cur));
+#endif
+                waitpid(cur, NULL, 0);
+#ifdef DEBUG
+                NP::log("parent waiting for pid " + to_string(cur) + " over");
+#endif
+                
+                break;
         }
     }
     
@@ -601,16 +644,16 @@ bool NP::processRequest(int sockfd) {
 //    NP::log(" done", 0, 1, 0);
 //#endif
     
-    // parent has to wait
-    for (int i = 0; i < totalLine; i++) {
-#ifdef DEBUG
-        NP::log("parent waiting for pid " + to_string(pids[i]));
-#endif
-        waitpid(pids[i], NULL, 0);
-#ifdef DEBUG
-        NP::log("parent waiting for pid " + to_string(pids[i]) + " over");
-#endif
-    }
+//    // parent has to wait
+//    for (int i = 0; i < totalLine; i++) {
+//#ifdef DEBUG
+//        NP::log("parent waiting for pid " + to_string(pids[i]));
+//#endif
+//        waitpid(pids[i], NULL, 0);
+//#ifdef DEBUG
+//        NP::log("parent waiting for pid " + to_string(pids[i]) + " over");
+//#endif
+//    }
 
 //    // free pipe
 //    for (int i = 0; i < totalLine; i++) {
@@ -648,10 +691,7 @@ void NP::prepareChildHead(const int curClNum, const int totalLine, vector<int*>&
         } else if (i == stdoutToRow || i == stderrToRow) {
             
             // close read, left write only
-            if (close(pipes[i][0])) {
-                NP::err("in afterForkChild(): close stdoutToRow(" + to_string(stdoutToRow) + ") or stderrToRow(" + to_string(stderrToRow) + ") error(" + to_string(errno) + "), with i = " + to_string(i) + ", pipes[i][0] = " + to_string(pipes[i][0]));
-            }
-            NP::log("close pipe[" + to_string(i) + "][" + to_string(0) + "]");
+            NP::close(pipes[i][0], i, 0, "in afterForkChild(): close stdoutToRow(" + to_string(stdoutToRow) + ") or stderrToRow(" + to_string(stderrToRow) + ") error(" + to_string(errno) + "), with i = " + to_string(i) + ", pipes[i][0] = " + to_string(pipes[i][0]), "close pipes[" + to_string(i) + "][" + to_string(0) + "]");
             
         } else if (i == curClNum) {
             
@@ -661,12 +701,8 @@ void NP::prepareChildHead(const int curClNum, const int totalLine, vector<int*>&
         } else {
 
             // close other pipes
-            if (close(pipes[i][0]) || close(pipes[i][1])) {
-                NP::err("parent close pipe error.");
-            }
-            NP::log("close pipe[" + to_string(i) + "][" + to_string(0) + "]");
-            NP::log("close pipe[" + to_string(i) + "][" + to_string(1) + "]");
-
+            NP::close(pipes[i][0], i, 0, "parent close pipe["+ to_string(i) +"][0] error.");
+            NP::close(pipes[i][1], i, 1, "parent close pipe["+ to_string(i) +"][1] error.");
         }
     }
 #ifdef DEBUG
@@ -674,6 +710,20 @@ void NP::prepareChildHead(const int curClNum, const int totalLine, vector<int*>&
     NP::log("in afterForkChild(): starting executing " + to_string(cmds.size()) + " cmds....");
 #endif
 
+    /**
+     *	Semaphore
+     */
+//    // Create shared memory
+//    int shmid = shmget (4410, sizeof (int), 0644 | IPC_CREAT);
+//    if (shmid < 0) {
+//        NP::err("shm creation error");
+//    }
+    // Create semaphore
+    sem_t* sem = sem_open("SEM", O_CREAT, 0777, 0);
+    if (sem == SEM_FAILED) {
+        NP::err("semaphore creation failed");
+    }
+    
     /**
      *  Fork: Start executing cmd
      */
@@ -695,53 +745,40 @@ void NP::prepareChildHead(const int curClNum, const int totalLine, vector<int*>&
                 // stdout
                 if (cmds[i].stdoutToRow == -1) {    // stdout to sockfd
                     
-                    if(dup2(cmds[i].sockfd, STDOUT_FILENO) == -1) {
-                        NP::err("dup2(cmds[i].sockfd, STDOUT_FILENO)");
-                    }
-
+                    NP::dup2(cmds[i].sockfd, STDOUT_FILENO);
+                    
                 } else if (cmds[i].stdoutToRow == 0) {  // stdout to next cmd
                     
-                    if(dup2(pipes[curClNum][1], STDOUT_FILENO) == -1) {
-                        NP::err("dup2(pipes[curClNum][1], STDOUT_FILENO)");
-                    }
-                    close(pipes[curClNum][1]);
+                    NP::dup2(pipes[curClNum][1], STDOUT_FILENO);
+                    NP::close(pipes[curClNum][1], curClNum, 1);
                     
                 } else {    // stdout to next N row
                     
-                    if(dup2(pipes[curClNum+cmds[i].stdoutToRow][1], STDOUT_FILENO) == -1) {
-                        NP::err("dup2(pipes[curClNum+cmds[i].stdoutToRow][1], STDOUT_FILENO)");
-                    }
-                    
-                    close(pipes[curClNum+cmds[i].stdoutToRow][1]);
+                    int ii = curClNum+cmds[i].stdoutToRow;
+                    NP::dup2(pipes[ii][1], STDOUT_FILENO);
+                    NP::close(pipes[ii][1], ii, 1);
                 }
                 
                 // stderr
                 if (cmds[i].stderrToRow == -1) {    // stderr to sockfd
                     
-                    if(dup2(cmds[i].sockfd, STDERR_FILENO) == -1) {
-                        NP::err("dup2(cmds[i].sockfd, STDERR_FILENO)");
-                    }
+                    NP::dup2(cmds[i].sockfd, STDERR_FILENO);
                     
                 } else if (cmds[i].stderrToRow == 0) {  // stderr to next cmd
                     
-                    if(dup2(pipes[curClNum][1], STDERR_FILENO) == -1) {
-                        NP::err("dup2(pipes[curClNum][1], STDERR_FILENO)");
-                    }
-                    close(pipes[curClNum][1]);
+                    NP::dup2(pipes[curClNum][1], STDERR_FILENO);
+                    NP::close(pipes[curClNum][1], curClNum, 1);
                     
                 } else {    // stderr to next N row
                     
-                    if(dup2(pipes[curClNum+cmds[i].stderrToRow][1], STDERR_FILENO) == -1) {
-                        NP::err("dup2(pipes[curClNum+cmds[i].stderrToRow][1], STDERR_FILENO)");
-                    }
-                    close(pipes[curClNum+cmds[i].stderrToRow][1]);
+                    int ii = curClNum+cmds[i].stderrToRow;
+                    NP::dup2(pipes[ii][1], STDERR_FILENO);
+                    NP::close(pipes[ii][1], ii , 1);
                 }
 
                 // stdin
-                if(dup2(pipes[curClNum][0], STDIN_FILENO) == -1) {
-                    NP::err("dup2(pipes[curClNum][0], STDIN_FILENO)");
-                }
-                close(pipes[curClNum][0]);
+                NP::dup2(pipes[curClNum][0], STDIN_FILENO);
+                NP::close(pipes[curClNum][0], curClNum, 0);
                 
 //#ifdef DEBUG
 //                NP::log("this is child. Pipe ready. Executing...");
@@ -749,6 +786,9 @@ void NP::prepareChildHead(const int curClNum, const int totalLine, vector<int*>&
 //                NP::log("end of cmd list");
 //#endif
 
+                // wait for signal
+                sem_wait(sem);
+                
                 if(execv(NP::Command::whereis(cmds[i].arg[0].c_str()), cmds[i].toArgArray()) == -1) {
                     string env = string(getenv("PATH"));
                     *remove(env.begin(), env.end(), '\r') = '\0';
@@ -757,48 +797,98 @@ void NP::prepareChildHead(const int curClNum, const int totalLine, vector<int*>&
                 
                 NP::err("in prepareChildHead: fork: case 0 error");
                 
-            default:    // parent
-                
-                NP::log("[parent] parent started.");
-                
-                
-//                if (close(pipes[curClNum][0])) {
-//                    NP::log("! close(pipes[" + to_string(curClNum) +"][0]) errer");
+//            default:    // parent
+//
+//                NP::log("[parent] parent started.");
+//                
+////                if (close(pipes[curClNum][0])) {
+////                    NP::log("! close(pipes[" + to_string(curClNum) +"][0]) errer");
+////                }
+//                
+//                NP::close(pipes[curClNum][1], curClNum, 1, "! [parent] close(pipes[" + to_string(curClNum) +"][1]) error");
+//                
+////                NP::log("[parent] close pipe[" + to_string(curClNum) + "][" + to_string(0) + "]");
+//                
+//                if (cmds[i].stdoutToRow > 0) {
+//                    
+//                    int ii = curClNum+cmds[i].stdoutToRow;
+//                    NP::close(pipes[ii][1], ii, 1, "! [parent] close(pipes[curClNum+cmds[i].stdoutToRow][1])", "[parent] close pipes[" + to_string(ii) + "][1]");
 //                }
-                
-                if (close(pipes[curClNum][1])) {
-                    NP::log("! close(pipes[" + to_string(curClNum) +"][1]) error");
-                }
-                
-//                NP::log("[parent] close pipe[" + to_string(curClNum) + "][" + to_string(0) + "]");
-                NP::log("[parent] close pipe[" + to_string(curClNum) + "][" + to_string(1) + "]");
-                
-
-                
-                if (cmds[i].stdoutToRow > 0) {
-                    
-                    if (close(pipes[curClNum+cmds[i].stdoutToRow][1])) {
-                        NP::log("! close(pipes[curClNum+cmds[i].stdoutToRow][1])");
-                    }
-                    NP::log("[parent] close pipe[" + to_string(curClNum+cmds[i].stdoutToRow) + "][" + to_string(1) + "]");
-                }
-                
-                if (cmds[i].stderrToRow > 0) {
-                    
-                    if (close(pipes[curClNum+cmds[i].stderrToRow][1])) {
-                        NP::log("! close(pipes[curClNum+cmds[i].stderrToRow][1])");
-                    }
-                    NP::log("[parent] close pipe[" + to_string(curClNum+cmds[i].stderrToRow) + "][" + to_string(1) + "]");
-                }
-#ifdef DEBUG
-                NP::log("[parent] in prepareChildHead(): waitpid(" + to_string(pid) + ")");
-#endif
-                waitpid(pid, NULL, 0);
-#ifdef DEBUG
-                NP::log("[parent] in prepareChildHead(): waitpid(" + to_string(pid) +  ") over");
-#endif
+//                
+//                if (cmds[i].stderrToRow > 0) {
+//                    
+//                    int ii = curClNum+cmds[i].stderrToRow;
+//                    NP::close(pipes[ii][1], ii, 1, "! [parent] close(pipes[curClNum+cmds[i].stderrToRow][1])", "[parent] close pipes[" + to_string(ii) + "][1]");
+//                }
+//#ifdef DEBUG
+//                NP::log("[parent] in prepareChildHead(): waitpid(" + to_string(pid) + ")");
+//#endif
+//                waitpid(pid, NULL, 0);
+//#ifdef DEBUG
+//                NP::log("[parent] in prepareChildHead(): waitpid(" + to_string(pid) +  ") over");
+//#endif
         }
+    
+    }
+    
+    // parent
+    
+    NP::log("[parent] parent started.");
+    
+    //                if (close(pipes[curClNum][0])) {
+    //                    NP::log("! close(pipes[" + to_string(curClNum) +"][0]) errer");
+    //                }
+    
+    NP::close(pipes[curClNum][1], curClNum, 1, "! [parent] close(pipes[" + to_string(curClNum) +"][1]) error", "[parent] close(pipes[" + to_string(curClNum) +"][1])");
+    
+    //                NP::log("[parent] close pipe[" + to_string(curClNum) + "][" + to_string(0) + "]");
+    for (int i = 0; i < cmdCount; i++) {
+        
+        if (cmds[i].stdoutToRow > 0) {
+            
+            int ii = curClNum+cmds[i].stdoutToRow;
+            if(::close(pipes[ii][1]) == -1) {
+                
+                NP::log("! [parent] close(pipes[curClNum+cmds[i].stdoutToRow][1])");
 
+            } else {
+            
+                NP::log("[parent] close pipes[" + to_string(ii) + "][1]");
+            }
+        }
+        
+        if (cmds[i].stderrToRow > 0) {
+            
+            int ii = curClNum+cmds[i].stderrToRow;
+            if(::close(pipes[ii][1]) == -1) {
+                
+                NP::log("! [parent] close(pipes[curClNum+cmds[i].stderrToRow][1])");
+                
+            } else {
+                
+                NP::log("[parent] close pipes[" + to_string(ii) + "][1]");
+            }
+            
+        }
+    }
+
+    
+    for (int i = 0; i < cmdCount; i++) {
+        
+#ifdef DEBUG
+        NP::log("[parent] in prepareChildHead(): sem_post()");
+#endif
+        sem_post(sem);
+        
+#ifdef DEBUG
+        NP::log("[parent] in prepareChildHead(): wait()");
+#endif
+        
+        wait(NULL);
+
+#ifdef DEBUG
+        NP::log("[parent] in prepareChildHead(): wait() over");
+#endif
     }
     
     NP::log("[parent] exit()");
