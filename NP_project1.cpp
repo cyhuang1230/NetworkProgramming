@@ -11,10 +11,6 @@
 //    |                     |
 //     ---------------------
 
-#include <string>
-#include <iostream>
-#include <sstream>
-#include <fstream>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/types.h>
@@ -24,6 +20,10 @@
 #include <signal.h>
 #include <unistd.h>
 #include <cstring>
+#include <string>
+#include <iostream>
+#include <sstream>
+#include <fstream>
 #include <algorithm>
 #include <vector>
 #include <list>
@@ -188,23 +188,14 @@ namespace NP {
 	/// Individual command
 	class Command {
 	public:
-//		const char* name;	// command name
-//		const char* arg;	// arguments
+
         vector<string> arg;
-		// stdout/err to next N row; -1 indicates sockfd; 0 means next cmd;
+        string toFile;
+        
+		// N: stdout/err to next N row; -1: sockfd; 0: next cmd, -2: to file (stdout only);
         int stdoutToRow = -1;
         int stderrToRow = -1;
         int sockfd;
-        
-//        Command(const char* name, const char* arg, int stdoutRow, int stderrRow): name(name), arg(arg), stdoutToRow(stdoutRow), stderrToRow(stderrRow){}
-//        
-//        Command(const char* name, const char* arg, int stdoutRow) {
-//            Command(name, arg, stdoutRow, -1);
-//        }
-//        
-//        Command(const char* name, const char* arg) {
-//            Command(name, arg, -1, -1);
-//        }
         
         Command(const char* name, int sockfd): sockfd(sockfd) {
             appendArg(name);
@@ -219,6 +210,7 @@ namespace NP {
         }
         
         string to_string() {
+            
             string str = "";
             for (int i = 0; i < arg.size(); i++) {
                 str.append(arg[i] + " ");
@@ -290,6 +282,12 @@ namespace NP {
                 NP::log("isCommandValid: setenv -> pass");
 #endif
                 return true;
+                
+            } else if (strncmp(cmd, "printenv", 6) == 0) {
+#ifdef DEBUG
+                NP::log("isCommandValid: printenv -> pass");
+#endif
+                return true;
             }
             
             return Command::whereis(cmd) == NULL ? false : true;
@@ -334,6 +332,14 @@ int main(int argc, const char * argv[]) {
 		portnum = atoi(argv[1]);
 	}
 	
+    // set PATH to `bin:.` to satisfy requirement
+    setenv("PATH", "bin:.", 1);
+    
+    // change directory to ras to satisfy requirement
+    if (chdir("ras") == -1) {
+        NP::err("chdir error");
+    }
+    
     // SIGCHLD to prevnet zombie process
 	struct sigaction sigchld_action;
 	sigchld_action.sa_handler = SIG_DFL;
@@ -438,14 +444,6 @@ bool NP::processRequest(int sockfd) {
 	while (cl.inputLinesLeft--) {
         
         strLine = NP::readWrapper(sockfd);
-
-//        if ((str = NP::readWrapper(sockfd)).find("exit") == string::npos) {
-//#ifdef DEBUG
-//            NP::log("exit detected.");
-//#endif
-//            needExit = true;
-//            break;
-//        }
         
         if (strLine.empty()) {  // empty string
             continue;
@@ -461,6 +459,7 @@ bool NP::processRequest(int sockfd) {
         vector<Command> curCl;
         bool shouldCurStrBeCmd = true;  // indicates if the current string is a cmd (else is a arg)
         
+        // setenv
         if (strLine.find("setenv") != string::npos && strLine.find("PATH", 7) != string::npos) {
 #ifdef LOCAL
             string dir = "/Users/ChienyuHuang/ras";
@@ -468,8 +467,8 @@ bool NP::processRequest(int sockfd) {
 #else
             string path = get_current_dir_name() + string("/") + strLine.substr(12);
 #endif
-            path = path.substr(0, path.length()-1);
-//            @TODO: trim '\n'
+            path = path.substr(0, path.length()-1); // trim '\n'
+
 #ifdef DEBUG
             NP::log("setenv detected! with path: " + string(path.c_str()));
 #endif
@@ -481,6 +480,7 @@ bool NP::processRequest(int sockfd) {
             break;
         }
         
+        // exit
         if (strLine.find("exit") != string::npos) {
             needExit = true;
             break;
@@ -511,7 +511,9 @@ bool NP::processRequest(int sockfd) {
                     
                     int extraLine = atoi(curStr.substr(1).c_str());
                     curCl.back().stdoutToRow = extraLine;
-                    cl.inputLinesLeft += extraLine;
+                    if (cl.inputLinesLeft < extraLine) {
+                        cl.inputLinesLeft = extraLine;
+                    }
                 }
                 
                 shouldCurStrBeCmd = true;
@@ -524,6 +526,14 @@ bool NP::processRequest(int sockfd) {
                 if (cl.inputLinesLeft < extraLine) {
                     cl.inputLinesLeft = extraLine;
                 }
+                
+            } else if (curStr[0] == '>') {
+                
+                string filename;
+                ss >> filename;
+                
+                curCl.back().stdoutToRow = -2;
+                curCl.back().toFile = filename;
                 
             } else if (shouldCurStrBeCmd && !NP::Command::isCommandValid(curStr_cstr)) {    // invalid cmd
                 
@@ -714,7 +724,7 @@ bool NP::processRequest(int sockfd) {
 /**
  *	for daemon to process cmds
  *
- *	@param cl	all commands
+ *	@param cl	a two-dimentional array, stroing all commands
  */
 void NP::deamonPreparation(vector<vector<Command>>& cl){
     
@@ -747,7 +757,7 @@ void NP::deamonPreparation(vector<vector<Command>>& cl){
                     NP::err("fork error");
                     
                 case 0: // child
-                    
+                {
                     /**
                      *	Prepare pipe
                      */
@@ -771,12 +781,27 @@ void NP::deamonPreparation(vector<vector<Command>>& cl){
 //#endif
                     
                     // exec
-                    if(execv(NP::Command::whereis(cl[curClNow][curCmd].arg[0].c_str()), cl[curClNow][curCmd].toArgArray()) == -1) {
+                    // special case for printenv
+                    char* path = NULL;
+                    if (cl[curClNow][curCmd].arg[0] == "printenv") {
+                        
+                        const char* printenvPath = "/usr/bin/printenv";
+                        path = new char[strlen(printenvPath)+1];
+                        strcpy(path, printenvPath);
+                        
+                    } else {
+                        
+                        path = NP::Command::whereis(cl[curClNow][curCmd].arg[0].c_str());
+                    }
+                    
+                    if(execv(path, cl[curClNow][curCmd].toArgArray()) == -1) {
+                        
                         string env = string(getenv("PATH"));
                         *remove(env.begin(), env.end(), '\r') = '\0';
-                        NP::err("execvp error: " + cl[curClNow][curCmd].arg[0] + ", with PATH: " + env);
+                        NP::err("execv error: " + cl[curClNow][curCmd].arg[0] + ", with PATH: " + env);
                     }
-
+                }
+                    
                 default:    // parent
                     
                     // if list has input to child, write it now
@@ -832,8 +857,9 @@ void NP::deamonPreparation(vector<vector<Command>>& cl){
 
                     /**
                      *	if child has output, we may
-                     *      1) store to list
-                     *      2) output to sockfd
+                     *      1) store to list ( >= 0)
+                     *      2) output to sockfd ( == -1)
+                     *      3) output to file ( == -2)
                      */
                     // stdout
                     if (strChildStdoutOutput.empty()) {
@@ -845,6 +871,15 @@ void NP::deamonPreparation(vector<vector<Command>>& cl){
                         NP::log("[parent] child(" + to_string(curClNow) + "," + to_string(curCmd) + ") has stdout to row " + to_string((curClNow)) + " + " + to_string(cl[curClNow][curCmd].stdoutToRow) + ":\n" + strChildStdoutOutput);
 #endif
                         switch (cl[curClNow][curCmd].stdoutToRow) {
+                                
+                            case -2:    // to file
+                            {
+                                ofstream fileOutput;
+                                fileOutput.open(cl[curClNow][curCmd].toFile, ios::out | ios::trunc);
+                                fileOutput << strChildStdoutOutput;
+                                fileOutput.close();
+                                break;
+                            }
                                 
                             case -1:    // to sockfd
                                 NP::writeWrapper(cl[curClNow][curCmd].sockfd, strChildStdoutOutput.c_str(), strChildStdoutOutput.length());
