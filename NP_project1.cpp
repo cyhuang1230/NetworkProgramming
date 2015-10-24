@@ -33,7 +33,7 @@ using namespace std;
 #define DEBUG
 
 #define MAX_SIZE 15001
-#define DEFAULT_PORT 4412
+#define DEFAULT_PORT 4411
 
 char buffer[MAX_SIZE];
 
@@ -175,7 +175,7 @@ namespace NP {
     list<pair<pair<int, int>, string>>::iterator findTemp(list<pair<pair<int, int>, string>>& l, const pair<int, int>& target) {
         
         list<pair<pair<int, int>, string>>::iterator it = l.begin();
-        while (it != l.begin()) {
+        while (it != l.end()) {
             if (it->first == target) {
                 return it;
             }
@@ -787,13 +787,13 @@ void NP::deamonPreparation(vector<vector<Command>>& cl){
                     if (itStdout != listStdout.end()) {
                         NP::writeWrapper(input[1], (itStdout->second).c_str(), (itStdout->second).length());
 #ifdef DEBUG
-                        NP::log("[parent] found stdout for (" + to_string(curClNow) + "," + to_string(curCmd) + "): (via fd " + to_string(input[1]) + ")\n" + itStdout->second);
+                        NP::log("[parent] (listStdout) found stdout for (" + to_string(curClNow) + "," + to_string(curCmd) + "): (via fd " + to_string(input[1]) + ")\n" + itStdout->second);
 #endif
                         listStdout.remove(*itStdout);
                         
                     } else {
 #ifdef DEBUG
-                        NP::log("[parent] nothing found stdout for (" + to_string(curClNow) + "," + to_string(curCmd) + ")");
+                        NP::log("[parent] (listStdout) nothing found stdout for (" + to_string(curClNow) + "," + to_string(curCmd) + ")");
 #endif
                     }
                     
@@ -801,13 +801,13 @@ void NP::deamonPreparation(vector<vector<Command>>& cl){
                     if (itStderr != listStderr.end()) {
                         NP::writeWrapper(input[1], (itStderr->second).c_str(), (itStderr->second).length());
 #ifdef DEBUG
-                        NP::log("[parent] found stderr for (" + to_string(curClNow) + "," + to_string(curCmd) + "): (via fd " + to_string(input[1]) + ")\n" + itStderr->second);
+                        NP::log("[parent] (listStderr) found stderr for (" + to_string(curClNow) + "," + to_string(curCmd) + "): (via fd " + to_string(input[1]) + ")\n" + itStderr->second);
 #endif
                         listStderr.remove(*itStderr);
                         
                     } else {
 #ifdef DEBUG
-                        NP::log("[parent] nothing found stderr for (" + to_string(curClNow) + "," + to_string(curCmd) + ")");
+                        NP::log("[parent] (listStderr) nothing found stderr for (" + to_string(curClNow) + "," + to_string(curCmd) + ")");
 #endif
                     }
                     
@@ -829,18 +829,20 @@ void NP::deamonPreparation(vector<vector<Command>>& cl){
                     NP::close(input[0], -1, -1, closeMsg + "[input] error", closeMsg + "[input] done");
                     NP::close(stdoutOutput[0], -1, -1, closeMsg + "[stdoutOutput] error", closeMsg + "[stdoutOutput] done");
                     NP::close(stderrOutput[0], -1, -1, closeMsg + "[stderrOutput] error", closeMsg + "[stderrOutput] done");
-                    
-                    // if child has output, we may
-                    //  1) store to list
-                    //  2) output to sockfd
+
+                    /**
+                     *	if child has output, we may
+                     *      1) store to list
+                     *      2) output to sockfd
+                     */
+                    // stdout
                     if (strChildStdoutOutput.empty()) {
 #ifdef DEBUG
                         NP::log("[parent] child(" + to_string(curClNow) + "," + to_string(curCmd) + ") no stdout");
 #endif
-                        
                     } else {
 #ifdef DEBUG
-                        NP::log("[parent] child(" + to_string(curClNow) + "," + to_string(curCmd) + ") has stdout[" + to_string(cl[curClNow][curCmd].stdoutToRow) + "]:\n" + strChildStdoutOutput);
+                        NP::log("[parent] child(" + to_string(curClNow) + "," + to_string(curCmd) + ") has stdout to row " + to_string((curClNow)) + " + " + to_string(cl[curClNow][curCmd].stdoutToRow) + ":\n" + strChildStdoutOutput);
 #endif
                         switch (cl[curClNow][curCmd].stdoutToRow) {
                                 
@@ -854,6 +856,31 @@ void NP::deamonPreparation(vector<vector<Command>>& cl){
                                 
                             default:    // to next N row
                                 listStdout.push_back(make_pair(make_pair(curClNow+cl[curClNow][curCmd].stdoutToRow, 0), strChildStdoutOutput));
+                        }
+                        
+                    }
+                    
+                    // stderr
+                    if (strChildStderrOutput.empty()) {
+#ifdef DEBUG
+                        NP::log("[parent] child(" + to_string(curClNow) + "," + to_string(curCmd) + ") no stderr");
+#endif
+                    } else {
+#ifdef DEBUG
+                        NP::log("[parent] child(" + to_string(curClNow) + "," + to_string(curCmd) + ") has stderr to row " + to_string((curClNow)) + " + " + to_string(cl[curClNow][curCmd].stderrToRow) + "]:\n" + strChildStderrOutput);
+#endif
+                        switch (cl[curClNow][curCmd].stderrToRow) {
+                                
+                            case -1:    // to sockfd
+                                NP::writeWrapper(cl[curClNow][curCmd].sockfd, strChildStderrOutput.c_str(), strChildStderrOutput.length());
+                                break;
+                                
+                            case 0: // to next cmd
+                                listStdout.push_back(make_pair(make_pair(curClNow, curCmd+1), strChildStderrOutput));
+                                break;
+                                
+                            default:    // to next N row
+                                listStdout.push_back(make_pair(make_pair(curClNow+cl[curClNow][curCmd].stderrToRow, 0), strChildStderrOutput));
                         }
                         
                     }
