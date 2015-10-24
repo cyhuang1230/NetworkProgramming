@@ -1,5 +1,8 @@
 //  NCTU CS. Network Programming Assignment 1
-//  by Denny Chien-Yu Huang.
+//  : A pipe-enabled shell. Please refer to hw1Spec.txt for more details.
+
+//  Code by Denny Chien-Yu Huang, 10/25/15.
+//  Github: http://cyhuang1230.github.io/
 
 //    A Command Line (a.k.a. cl)
 //     ---------------------
@@ -10,6 +13,13 @@
 //    |                     |
 //    |                     |
 //     ---------------------
+
+// Program structure:
+//  Socket process
+//   |
+//    - Daemon
+//       |
+//        - Child process to fork and exec cmds
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -32,6 +42,8 @@ using namespace std;
 
 #define MAX_SIZE 15001
 #define DEFAULT_PORT 4411
+
+//#define DEBUG 1
 
 char buffer[MAX_SIZE];
 
