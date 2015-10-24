@@ -614,24 +614,23 @@ bool NP::processRequest(int sockfd) {
     
     /**
      *  Execute Command
-     *  
-     *  @TODO: need to determine `exit` cmd
      *
      */
+    NP::deamonPreparation(cl.cmds);
     
-    pid_t daemon = fork();
-    switch (daemon) {
-        case -1:    // failure
-            NP::err("fork deamon error");
-            
-        case 0: // daemon
-            NP::deamonPreparation(cl.cmds);
-            break;
-        
-        default:    // parent
-            waitpid(daemon, NULL, 0);
-            break;
-    }
+//    pid_t daemon = fork();
+//    switch (daemon) {
+//        case -1:    // failure
+//            NP::err("fork deamon error");
+//            
+//        case 0: // daemon
+//            NP::deamonPreparation(cl.cmds);
+//            break;
+//        
+//        default:    // parent
+//            waitpid(daemon, NULL, 0);
+//            break;
+//    }
     
 //    
 //    vector<pid_t> pids;
