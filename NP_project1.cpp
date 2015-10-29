@@ -265,7 +265,7 @@ namespace NP {
         }
         
         static bool isCommandValid(const char* cmd) {
-            
+
             // dont block setenv
             if (strncmp(cmd, "setenv", 6) == 0) {
 #ifdef DEBUG
@@ -447,7 +447,7 @@ bool NP::processRequest(int sockfd) {
 #endif
         // declare a array to store current cmds
         vector<Command> curCl;
-        bool shouldCurStrBeCmd = true;  // indicates if the current string is a cmd (else is a arg)
+        bool shouldCurStrBeCmd = true;  // indicates if the current string is a cmd (else is an arg)
         
         // setenv
         if (strLine.find("setenv") != string::npos && strLine.find("PATH", 7) != string::npos) {
@@ -455,16 +455,34 @@ bool NP::processRequest(int sockfd) {
             string dir = "/Users/ChienyuHuang/ras";
             string path = dir + string("/") + strLine.substr(12);
 #else
-            string path = get_current_dir_name() + string("/") + strLine.substr(12);
+//            string path = get_current_dir_name() + string("/") + strLine.substr(12);
+            string path = strLine.substr(12);
 #endif
-            path = path.substr(0, path.length()-1); // trim '\n'
-
+            *remove(path.begin(), path.end(), '\n') = '\0'; // trim '\n'
+            
 #ifdef DEBUG
             NP::log("setenv detected! with path: " + string(path.c_str()));
 #endif
             if(setenv("PATH", path.c_str(), 1) == -1) {
                 NP::err("setenv error, with path: " + string(path.c_str()));
             }
+            
+            needExecute = false;
+            break;
+            
+        } else if (strLine.find("printenv") != string::npos && strLine.find("PATH", 9) != string::npos) {
+            
+#ifdef DEBUG
+            NP::log("printenv detected!");
+#endif
+            
+            string path = getenv("PATH");
+            *remove(path.begin(), path.end(), '\r') = '\0';
+            path += "\n";
+            path = "PATH=" + path;
+            
+            NP::writeWrapper(sockfd, path.c_str(), path.length());
+            
             
             needExecute = false;
             break;
@@ -614,7 +632,6 @@ bool NP::processRequest(int sockfd) {
     
     /**
      *  Execute Command
-     *
      */
     NP::deamonPreparation(cl.cmds);
 
@@ -682,23 +699,23 @@ void NP::deamonPreparation(vector<vector<Command>>& cl){
                     
                     // exec
                     // special case for printenv
-                    char* path = NULL;
-                    if (cl[curClNow][curCmd].arg[0] == "printenv") {
-                        
-                        const char* printenvPath = "/usr/bin/printenv";
-                        path = new char[strlen(printenvPath)+1];
-                        strcpy(path, printenvPath);
-                        
-                    } else {
-                        
-                        path = NP::Command::whereis(cl[curClNow][curCmd].arg[0].c_str());
-                    }
-                    
-                    if(execv(path, cl[curClNow][curCmd].toArgArray()) == -1) {
+                    char* file = NULL;
+//                    if (cl[curClNow][curCmd].arg[0] == "printenv") {
+//                        
+//                        const char* printenvPath = "/usr/bin/printenv";
+//                        path = new char[strlen(printenvPath)+1];
+//                        strcpy(path, printenvPath);
+//                        
+//                    } else {
+//                        
+                        file = NP::Command::whereis(cl[curClNow][curCmd].arg[0].c_str());
+//                    }
+//                    const char* file = cl[curClNow][curCmd].arg[0].c_str();
+                    if(execvp(file, cl[curClNow][curCmd].toArgArray()) == -1) {
                         
                         string env = string(getenv("PATH"));
-                        *remove(env.begin(), env.end(), '\r') = '\0';
-                        NP::err("execv error: " + cl[curClNow][curCmd].arg[0] + ", with PATH: " + env);
+                        *remove(env.begin(), env.end(), '\r') = ' ';
+                        NP::err("execvp error: " + string(file) + ", with PATH: " + env + ", pwd = " + get_current_dir_name());
                     }
                 }
                     
