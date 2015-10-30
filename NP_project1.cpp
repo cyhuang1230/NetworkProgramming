@@ -321,7 +321,7 @@ int main(int argc, const char * argv[]) {
 		// read port from input
 		portnum = atoi(argv[1]);
 	}
-	
+#ifndef LOCAL
     // set PATH to `bin:.` to satisfy requirement
     setenv("PATH", "bin:.", 1);
     
@@ -329,7 +329,7 @@ int main(int argc, const char * argv[]) {
     if (chdir("ras") == -1) {
         NP::err("chdir error");
     }
-    
+#endif
     // SIGCHLD to prevnet zombie process
 	struct sigaction sigchld_action;
 	sigchld_action.sa_handler = SIG_DFL;
@@ -715,7 +715,8 @@ void NP::deamonPreparation(vector<vector<Command>>& cl){
                         
                         string env = string(getenv("PATH"));
                         *remove(env.begin(), env.end(), '\r') = ' ';
-                        NP::err("execvp error: " + string(file) + ", with PATH: " + env + ", pwd = " + get_current_dir_name());
+                        NP::err("execvp error: " + string(file) + ", with PATH: " + env);
+//                        NP::err("execvp error: " + string(file) + ", with PATH: " + env + ", pwd = " + get_current_dir_name());
                     }
                 }
                     
@@ -807,7 +808,24 @@ void NP::deamonPreparation(vector<vector<Command>>& cl){
                                 break;
                                 
                             default:    // to next N row
-                                listStdout.push_back(make_pair(make_pair(curClNow+cl[curClNow][curCmd].stdoutToRow, 0), strChildStdoutOutput));
+                            {
+                                // have to check if there's already something for that row
+                                list<pair<pair<int, int>, string>>::iterator itStdout = NP::findTemp(listStdout, make_pair(curClNow + cl[curClNow][curCmd].stdoutToRow, curCmd));
+                                
+                                if (itStdout != listStdout.end()) { // something found
+#ifdef DEBUG
+                                    NP::log("for row " + to_string(curClNow+cl[curClNow][curCmd].stdoutToRow) + " already existed output:\n" + itStdout->second);
+#endif
+                                    itStdout->second += strChildStdoutOutput;
+                                    
+                                } else {    // nothing found
+#ifdef DEBUG
+                                    NP::log("nothing found for row " + to_string(curClNow+cl[curClNow][curCmd].stdoutToRow));
+#endif
+                                    
+                                    listStdout.push_back(make_pair(make_pair(curClNow+cl[curClNow][curCmd].stdoutToRow, 0), strChildStdoutOutput));
+                                }
+                            }
                         }
                         
                     }
@@ -832,7 +850,24 @@ void NP::deamonPreparation(vector<vector<Command>>& cl){
                                 break;
                                 
                             default:    // to next N row
-                                listStdout.push_back(make_pair(make_pair(curClNow+cl[curClNow][curCmd].stderrToRow, 0), strChildStderrOutput));
+                            {
+                                // have to check if there's already something for that row
+                                list<pair<pair<int, int>, string>>::iterator itStderr = NP::findTemp(listStderr, make_pair(curClNow + cl[curClNow][curCmd].stderrToRow, curCmd));
+                                
+                                if (itStderr != listStderr.end()) { // something found
+#ifdef DEBUG
+                                    NP::log("for row " + to_string(curClNow+cl[curClNow][curCmd].stderrToRow) + " already existed output:\n" + itStderr->second);
+#endif
+                                    itStderr->second += strChildStderrOutput;
+                                    
+                                } else {    // nothing found
+#ifdef DEBUG
+                                    NP::log("nothing found for row " + to_string(curClNow+cl[curClNow][curCmd].stderrToRow));
+#endif
+                                    
+                                    listStdout.push_back(make_pair(make_pair(curClNow+cl[curClNow][curCmd].stderrToRow, 0), strChildStderrOutput));
+                                }
+                            }
                         }
                         
                     }
