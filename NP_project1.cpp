@@ -432,7 +432,9 @@ bool NP::processRequest(int sockfd) {
     
 	// read cmd
 	while (cl.inputLinesLeft--) {
-        
+#ifdef DEBUG
+        NP::log("cl.inputLinesLeft = " + to_string(cl.inputLinesLeft));
+#endif
         strLine = NP::readWrapper(sockfd);
         
         if (strLine.empty()) {  // empty string
@@ -482,7 +484,6 @@ bool NP::processRequest(int sockfd) {
             path = "PATH=" + path;
             
             NP::writeWrapper(sockfd, path.c_str(), path.length());
-            
             
             needExecute = false;
             break;
@@ -553,6 +554,11 @@ bool NP::processRequest(int sockfd) {
                 string msg = prefix + curStr + suffix;
                 NP::writeWrapper(sockfd, msg.c_str(), msg.length());
                 
+                // set the previous cmd to |1
+                if (!curCl.empty()) {
+                    curCl.back().stdoutToRow = 1;
+                }
+                
                 // no need to read futher cmds
                 break;
                 
@@ -589,6 +595,7 @@ bool NP::processRequest(int sockfd) {
             
             // if curCl is empty -> the first cmd is invalid
             // -> dont process this row
+            cl.inputLinesLeft++;
             continue;
             
         } else {
@@ -599,7 +606,7 @@ bool NP::processRequest(int sockfd) {
             // otherwise, push back this row
             cl.cmds.push_back(curCl);
         }
-	}
+    }
 	
     if (needExit) {
 #ifdef DEBUG
