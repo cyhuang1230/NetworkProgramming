@@ -150,7 +150,7 @@ namespace NP {
     
     void deamonPreparation(vector<vector<Command>>& cl);
     
-    void processCommand(const int n, vector<Command>&, list<pair<pair<int, int>, string>>&, list<pair<pair<int, int>, string>>&);
+    void processCommand(const int n, vector<Command>&, list<pair<pair<int, int>, string>>&);
     
     void dup2(const int newfd, const int oldfd, bool needOutput = true) {
         
@@ -429,8 +429,7 @@ bool NP::processRequest(int sockfd) {
     string strLine;
     bool needExit = false;
     bool needExecute = true;
-    list<pair<pair<int, int>, string>> listStdout;    // store stdout temporarily
-    list<pair<pair<int, int>, string>> listStderr;    // store stderr temporarily
+    list<pair<pair<int, int>, string>> listOutput;    // store output temporarily
     int counter = 0;
     
 	// read cmd
@@ -599,7 +598,7 @@ bool NP::processRequest(int sockfd) {
         }
         
         // process this line
-        NP::processCommand(counter++, curCl, listStdout, listStderr);
+        NP::processCommand(counter++, curCl, listOutput);
     }
 
     if (needExit) {
@@ -623,7 +622,7 @@ bool NP::processRequest(int sockfd) {
  *
  *	@param cl	a vector of Command
  */
-void NP::processCommand(const int no, vector<Command>& line, list<pair<pair<int, int>, string>>& listStdout, list<pair<pair<int, int>, string>>& listStderr) {
+void NP::processCommand(const int no, vector<Command>& line, list<pair<pair<int, int>, string>>& listOutput) {
 
 #ifdef DEBUG
     NP::log("processCommand: no. " + to_string(no));
@@ -681,36 +680,22 @@ void NP::processCommand(const int no, vector<Command>& line, list<pair<pair<int,
             default:    // parent
                 
                 // if list has input to child, write it now
-                list<pair<pair<int, int>, string>>::iterator itStdout = NP::findTemp(listStdout, make_pair(no, curCmd));
-                list<pair<pair<int, int>, string>>::iterator itStderr = NP::findTemp(listStderr, make_pair(no, curCmd));
+                list<pair<pair<int, int>, string>>::iterator itStdout = NP::findTemp(listOutput, make_pair(no, curCmd));
                 
-                // stdout found
-                if (itStdout != listStdout.end()) {
+                // found output
+                if (itStdout != listOutput.end()) {
                     NP::writeWrapper(input[1], (itStdout->second).c_str(), (itStdout->second).length());
 #ifdef DEBUG
-                    NP::log("[parent] (listStdout) found stdout for (" + to_string(no) + "," + to_string(curCmd) + "): (via fd " + to_string(input[1]) + ")\n" + itStdout->second);
+                    NP::log("[parent] found output for (" + to_string(no) + "," + to_string(curCmd) + "): (via fd " + to_string(input[1]) + ")\n" + itStdout->second);
 #endif
-                    listStdout.remove(*itStdout);
+                    listOutput.remove(*itStdout);
                     
                 } else {
 #ifdef DEBUG
-                    NP::log("[parent] (listStdout) nothing found stdout for (" + to_string(no) + "," + to_string(curCmd) + ")");
+                    NP::log("[parent] nothing found for (" + to_string(no) + "," + to_string(curCmd) + ")");
 #endif
                 }
                 
-                // stderr found
-                if (itStderr != listStderr.end()) {
-                    NP::writeWrapper(input[1], (itStderr->second).c_str(), (itStderr->second).length());
-#ifdef DEBUG
-                    NP::log("[parent] (listStderr) found stderr for (" + to_string(no) + "," + to_string(curCmd) + "): (via fd " + to_string(input[1]) + ")\n" + itStderr->second);
-#endif
-                    listStderr.remove(*itStderr);
-                    
-                } else {
-#ifdef DEBUG
-                    NP::log("[parent] (listStderr) nothing found stderr for (" + to_string(no) + "," + to_string(curCmd) + ")");
-#endif
-                }
                 
                 // close write end of 3 pipes
                 string closeMsg = "[parent] close write pipe(" + to_string(no) + "," + to_string(curCmd) + ") ";
@@ -762,15 +747,15 @@ void NP::processCommand(const int no, vector<Command>& line, list<pair<pair<int,
                             break;
                             
                         case 0: // to next cmd
-                            listStdout.push_back(make_pair(make_pair(no, curCmd+1), strChildStdoutOutput));
+                            listOutput.push_back(make_pair(make_pair(no, curCmd+1), strChildStdoutOutput));
                             break;
                             
                         default:    // to next N row
                         {
                             // have to check if there's already something for that row
-                            list<pair<pair<int, int>, string>>::iterator itStdout = NP::findTemp(listStdout, make_pair(no + line[curCmd].stdoutToRow, curCmd));
+                            list<pair<pair<int, int>, string>>::iterator itStdout = NP::findTemp(listOutput, make_pair(no + line[curCmd].stdoutToRow, curCmd));
                             
-                            if (itStdout != listStdout.end()) { // something found
+                            if (itStdout != listOutput.end()) { // something found
 #ifdef DEBUG
                                 NP::log("for row " + to_string(no+line[curCmd].stdoutToRow) + " already existed output:\n" + itStdout->second);
 #endif
@@ -781,7 +766,7 @@ void NP::processCommand(const int no, vector<Command>& line, list<pair<pair<int,
                                 NP::log("nothing found for row " + to_string(no+line[curCmd].stdoutToRow));
 #endif
                                 
-                                listStdout.push_back(make_pair(make_pair(no+line[curCmd].stdoutToRow, 0), strChildStdoutOutput));
+                                listOutput.push_back(make_pair(make_pair(no+line[curCmd].stdoutToRow, 0), strChildStdoutOutput));
                             }
                         }
                     }
@@ -804,15 +789,15 @@ void NP::processCommand(const int no, vector<Command>& line, list<pair<pair<int,
                             break;
                             
                         case 0: // to next cmd
-                            listStderr.push_back(make_pair(make_pair(no, curCmd+1), strChildStderrOutput));
+                            listOutput.push_back(make_pair(make_pair(no, curCmd+1), strChildStderrOutput));
                             break;
                             
                         default:    // to next N row
                         {
                             // have to check if there's already something for that row
-                            list<pair<pair<int, int>, string>>::iterator itStderr = NP::findTemp(listStderr, make_pair(no + line[curCmd].stderrToRow, curCmd));
+                            list<pair<pair<int, int>, string>>::iterator itStderr = NP::findTemp(listOutput, make_pair(no + line[curCmd].stderrToRow, curCmd));
                             
-                            if (itStderr != listStderr.end()) { // something found
+                            if (itStderr != listOutput.end()) { // something found
 #ifdef DEBUG
                                 NP::log("for row " + to_string(no+line[curCmd].stderrToRow) + " already existed output:\n" + itStderr->second);
 #endif
@@ -823,7 +808,7 @@ void NP::processCommand(const int no, vector<Command>& line, list<pair<pair<int,
                                 NP::log("nothing found for row " + to_string(no+line[curCmd].stderrToRow));
 #endif
                                 
-                                listStderr.push_back(make_pair(make_pair(no+line[curCmd].stderrToRow, 0), strChildStderrOutput));
+                                listOutput.push_back(make_pair(make_pair(no+line[curCmd].stderrToRow, 0), strChildStderrOutput));
                             }
                         }
                     }
