@@ -479,12 +479,19 @@ bool NP::processRequest(int sockfd) {
 #ifdef DEBUG
             NP::log("printenv detected!");
 #endif
-            string path = getenv("PATH");
-            *remove(path.begin(), path.end(), '\r') = '\0';
-            path += "\n";
-            path = "PATH=" + path;
+            char* path = new char[MAX_SIZE];
+            char* got = getenv("PATH");
+            char* pch = strchr(got, '\r');
+            if (pch != NULL) {
+                *pch = '\0';
+            }
+            strcpy(path, "PATH=");
+            strcat(path, got);
+            strcat(path, "\n");
             
-            NP::writeWrapper(sockfd, path.c_str(), path.length());
+            NP::writeWrapper(sockfd, path, strlen(path));
+            
+            delete[] path;
             
             needExecute = false;
             break;
