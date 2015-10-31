@@ -129,8 +129,8 @@ namespace NP {
         if (needPrompt) {
             writeWrapper(sockfd, "% ", 2);
         }
-		
-		resetBuffer();
+
+        resetBuffer();
 		int n = read(sockfd, buffer, sizeof(buffer));
 		if (n < 0) {
 		
@@ -390,7 +390,7 @@ int main(int argc, const char * argv[]) {
             "****************************************\n"
             "** Welcome to the information server. **\n"
             "****************************************\n";
-            NP::writeWrapper(newsockfd, welcomeMsg, sizeof(welcomeMsg));
+            NP::writeWrapper(newsockfd, welcomeMsg, strlen(welcomeMsg));
             
             do {
                 
@@ -814,7 +814,7 @@ void NP::processCommand(const int no, vector<Command>& line, list<pair<pair<int,
                     }
                     
                 }
-//@TODO: stdout & stderr wrong order.
+
         }
         
     }
