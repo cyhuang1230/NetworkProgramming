@@ -148,9 +148,9 @@ namespace NP {
 		return string(buffer);
 	}
     
-    void prepareChildHead(int, const int, vector<int*>&, vector<Command>&);
-    
     void deamonPreparation(vector<vector<Command>>& cl);
+    
+    void processCommand(const int n, vector<Command>&, list<pair<pair<int, int>, string>>&, list<pair<pair<int, int>, string>>&);
     
     void dup2(const int newfd, const int oldfd, bool needOutput = true) {
         
@@ -429,6 +429,9 @@ bool NP::processRequest(int sockfd) {
     string strLine;
     bool needExit = false;
     bool needExecute = true;
+    list<pair<pair<int, int>, string>> listStdout;    // store stdout temporarily
+    list<pair<pair<int, int>, string>> listStderr;    // store stderr temporarily
+    int counter = 0;
     
 	// read cmd
 	while (cl.inputLinesLeft--) {
@@ -477,7 +480,6 @@ bool NP::processRequest(int sockfd) {
 #ifdef DEBUG
             NP::log("printenv detected!");
 #endif
-            
             string path = getenv("PATH");
             *remove(path.begin(), path.end(), '\r') = '\0';
             path += "\n";
@@ -491,6 +493,9 @@ bool NP::processRequest(int sockfd) {
         
         // exit
         if (strLine.find("exit") != string::npos) {
+#ifdef DEBUG
+            NP::log("exit found!");
+#endif
             needExit = true;
             break;
         }
@@ -587,22 +592,16 @@ bool NP::processRequest(int sockfd) {
 #ifdef DEBUG
             NP::log("curCl empty -> continue.");
 #endif
-            
             // if curCl is empty -> the first cmd is invalid
             // -> dont process this row
             cl.inputLinesLeft++;
             continue;
-            
-        } else {
-            
-#ifdef DEBUG
-            NP::log("curCl nonempty -> push back.");
-#endif
-            // otherwise, push back this row
-            cl.cmds.push_back(curCl);
         }
+        
+        // process this line
+        NP::processCommand(counter++, curCl, listStdout, listStderr);
     }
-	
+
     if (needExit) {
 #ifdef DEBUG
         NP::log("needExit -> return true");
@@ -615,267 +614,224 @@ bool NP::processRequest(int sockfd) {
 #endif
         return false;
     }
-    
-    
-#ifdef DEBUG
-    NP::log("cl: ");
-    for (int i = 0; i < cl.cmds.size(); i++) {
-        for (int j = 0; j < cl.cmds[i].size(); j++) {
-            for (int k = 0; k < cl.cmds[i][j].arg.size(); k++) {
-                NP::log(cl.cmds[i][j].arg[k], 0, 0, 0);
-                NP::log(" ", 0, 0, 0);
-            }
-            NP::log("\n", 0, 0, 0);
-        }
-    }
-    NP::log("cl end.");
-    NP::log("Preparing to execute cmd...");
-#endif
-    
-    /**
-     *  Execute Command
-     */
-    NP::deamonPreparation(cl.cmds);
 
     return false;
 }
 
 /**
- *	for daemon to process cmds
+ *	Process command
  *
- *	@param cl	a two-dimentional array, stroing all commands
+ *	@param cl	a vector of Command
  */
-void NP::deamonPreparation(vector<vector<Command>>& cl){
-    
-    const int totalLines = cl.size();
-    list<pair<pair<int, int>, string>> listStdout;    // store stdout temporarily
-    list<pair<pair<int, int>, string>> listStderr;    // store stderr temporarily
-    
-    for (int curClNow = 0; curClNow < totalLines; curClNow++) {
-        
-        int totalCmd = cl[curClNow].size();
-        
-        for (int curCmd = 0; curCmd < totalCmd; curCmd++) {
+void NP::processCommand(const int no, vector<Command>& line, list<pair<pair<int, int>, string>>& listStdout, list<pair<pair<int, int>, string>>& listStderr) {
 
 #ifdef DEBUG
-            NP::log("this is cl[" + to_string(curClNow) + "][" + to_string(curCmd) + "] = " + cl[curClNow][curCmd].arg[0]);
+    NP::log("processCommand: no. " + to_string(no));
 #endif
-            
-            // Create pipe for this children
-            int input[2];   // write data to child
-            int stdoutOutput[2];    // child's stdout output
-            int stderrOutput[2];    // child's stderr otuput
-            
-            pipe(input);
-            pipe(stdoutOutput);
-            pipe(stderrOutput);
-            
-            pid_t child = fork();
-            switch (child) {
-                case -1:    // error
-                    NP::err("fork error");
+    
+    const int totalCmd = line.size();
+    
+    for (int curCmd = 0; curCmd < totalCmd; curCmd++) {
+        
+        // Create pipe for this children
+        int input[2];   // write data to child
+        int stdoutOutput[2];    // child's stdout output
+        int stderrOutput[2];    // child's stderr otuput
+        
+        pipe(input);
+        pipe(stdoutOutput);
+        pipe(stderrOutput);
+        
+        pid_t child = fork();
+        switch (child) {
+            case -1:    // error
+                NP::err("fork error");
+                
+            case 0: // child
+            {
+                /**
+                 *	Prepare pipe
+                 */
+                // stdout
+                NP::dup2(stdoutOutput[1], STDOUT_FILENO, false);
+                close(stdoutOutput[1], -1, stdoutOutput[1], "", "", false);
+                close(stdoutOutput[0], -1, stdoutOutput[0], "", "", false);
+                
+                // stderr
+                NP::dup2(stderrOutput[1], STDERR_FILENO, false);
+                close(stderrOutput[1], -1, stderrOutput[1], "", "", false);
+                close(stderrOutput[0], -1, stderrOutput[0], "", "", false);
+                
+                // stdin
+                NP::dup2(input[0], STDIN_FILENO, false);
+                close(input[1], -1, stderrOutput[1], "", "", false);
+                close(input[0], -1, stderrOutput[0], "", "", false);
+                
+                // exec
+                char* file = NP::Command::whereis(line[curCmd].arg[0].c_str());
+                if(execvp(file, line[curCmd].toArgArray()) == -1) {
                     
-                case 0: // child
-                {
-                    /**
-                     *	Prepare pipe
-                     */
-                    // stdout
-                    NP::dup2(stdoutOutput[1], STDOUT_FILENO, false);
-                    close(stdoutOutput[1], -1, stdoutOutput[1], "", "", false);
-                    close(stdoutOutput[0], -1, stdoutOutput[0], "", "", false);
-                    
-                    // stderr
-                    NP::dup2(stderrOutput[1], STDERR_FILENO, false);
-                    close(stderrOutput[1], -1, stderrOutput[1], "", "", false);
-                    close(stderrOutput[0], -1, stderrOutput[0], "", "", false);
-                    
-                    // stdin
-                    NP::dup2(input[0], STDIN_FILENO, false);
-                    close(input[1], -1, stderrOutput[1], "", "", false);
-                    close(input[0], -1, stderrOutput[0], "", "", false);
-                    
-//#ifdef DEBUG
-//                    NP::log("Ready to execute cmd: " + cl[curClNow][curCmd].arg[0]);
-//#endif
-                    
-                    // exec
-                    // special case for printenv
-                    char* file = NULL;
-//                    if (cl[curClNow][curCmd].arg[0] == "printenv") {
-//                        
-//                        const char* printenvPath = "/usr/bin/printenv";
-//                        path = new char[strlen(printenvPath)+1];
-//                        strcpy(path, printenvPath);
-//                        
-//                    } else {
-//                        
-                        file = NP::Command::whereis(cl[curClNow][curCmd].arg[0].c_str());
-//                    }
-//                    const char* file = cl[curClNow][curCmd].arg[0].c_str();
-                    if(execvp(file, cl[curClNow][curCmd].toArgArray()) == -1) {
-                        
-                        string env = string(getenv("PATH"));
-                        *remove(env.begin(), env.end(), '\r') = ' ';
-                        NP::err("execvp error: " + string(file) + ", with PATH: " + env);
+                    string env = string(getenv("PATH"));
+                    *remove(env.begin(), env.end(), '\r') = ' ';
+                    NP::err("execvp error: " + string(file) + ", with PATH: " + env);
 //                        NP::err("execvp error: " + string(file) + ", with PATH: " + env + ", pwd = " + get_current_dir_name());
-                    }
                 }
-                    
-                default:    // parent
-                    
-                    // if list has input to child, write it now
-                    list<pair<pair<int, int>, string>>::iterator itStdout = NP::findTemp(listStdout, make_pair(curClNow, curCmd));
-                    list<pair<pair<int, int>, string>>::iterator itStderr = NP::findTemp(listStderr, make_pair(curClNow, curCmd));
-                    
-                    // stdout found
-                    if (itStdout != listStdout.end()) {
-                        NP::writeWrapper(input[1], (itStdout->second).c_str(), (itStdout->second).length());
-#ifdef DEBUG
-                        NP::log("[parent] (listStdout) found stdout for (" + to_string(curClNow) + "," + to_string(curCmd) + "): (via fd " + to_string(input[1]) + ")\n" + itStdout->second);
-#endif
-                        listStdout.remove(*itStdout);
-                        
-                    } else {
-#ifdef DEBUG
-                        NP::log("[parent] (listStdout) nothing found stdout for (" + to_string(curClNow) + "," + to_string(curCmd) + ")");
-#endif
-                    }
-                    
-                    // stderr found
-                    if (itStderr != listStderr.end()) {
-                        NP::writeWrapper(input[1], (itStderr->second).c_str(), (itStderr->second).length());
-#ifdef DEBUG
-                        NP::log("[parent] (listStderr) found stderr for (" + to_string(curClNow) + "," + to_string(curCmd) + "): (via fd " + to_string(input[1]) + ")\n" + itStderr->second);
-#endif
-                        listStderr.remove(*itStderr);
-                        
-                    } else {
-#ifdef DEBUG
-                        NP::log("[parent] (listStderr) nothing found stderr for (" + to_string(curClNow) + "," + to_string(curCmd) + ")");
-#endif
-                    }
-                    
-                    // close write end of 3 pipes
-                    string closeMsg = "[parent] close write pipe(" + to_string(curClNow) + "," + to_string(curCmd) + ") ";
-                    NP::close(input[1], -1, -1, closeMsg + "[input] error", closeMsg + "[input] done");
-                    NP::close(stdoutOutput[1], -1, -1, closeMsg + "[stdoutOutput] error", closeMsg + "[stdoutOutput] done");
-                    NP::close(stderrOutput[1], -1, -1, closeMsg + "[stderrOutput] error", closeMsg + "[stderrOutput] done");
-                    
-                    // wait
-                    waitpid(child, NULL, 0);
-                    
-                    // read from child output
-                    string strChildStdoutOutput = NP::readWrapper(stdoutOutput[0], false);
-                    string strChildStderrOutput = NP::readWrapper(stderrOutput[0], false);
-                    
-                    // close read end of 3 pipes
-                    closeMsg = "[parent] close read pipe(" + to_string(curClNow) + "," + to_string(curCmd) + ") ";
-                    NP::close(input[0], -1, -1, closeMsg + "[input] error", closeMsg + "[input] done");
-                    NP::close(stdoutOutput[0], -1, -1, closeMsg + "[stdoutOutput] error", closeMsg + "[stdoutOutput] done");
-                    NP::close(stderrOutput[0], -1, -1, closeMsg + "[stderrOutput] error", closeMsg + "[stderrOutput] done");
-
-                    /**
-                     *	if child has output, we may
-                     *      1) store to list ( >= 0)
-                     *      2) output to sockfd ( == -1)
-                     *      3) output to file ( == -2)
-                     */
-                    // stdout
-                    if (strChildStdoutOutput.empty()) {
-#ifdef DEBUG
-                        NP::log("[parent] child(" + to_string(curClNow) + "," + to_string(curCmd) + ") no stdout");
-#endif
-                    } else {
-#ifdef DEBUG
-                        NP::log("[parent] child(" + to_string(curClNow) + "," + to_string(curCmd) + ") has stdout to row " + to_string((curClNow)) + " + " + to_string(cl[curClNow][curCmd].stdoutToRow) + ":\n" + strChildStdoutOutput);
-#endif
-                        switch (cl[curClNow][curCmd].stdoutToRow) {
-                                
-                            case -2:    // to file
-                            {
-                                ofstream fileOutput;
-                                fileOutput.open(cl[curClNow][curCmd].toFile, ios::out | ios::trunc);
-                                fileOutput << strChildStdoutOutput;
-                                fileOutput.close();
-                                break;
-                            }
-                                
-                            case -1:    // to sockfd
-                                NP::writeWrapper(cl[curClNow][curCmd].sockfd, strChildStdoutOutput.c_str(), strChildStdoutOutput.length());
-                                break;
-                                
-                            case 0: // to next cmd
-                                listStdout.push_back(make_pair(make_pair(curClNow, curCmd+1), strChildStdoutOutput));
-                                break;
-                                
-                            default:    // to next N row
-                            {
-                                // have to check if there's already something for that row
-                                list<pair<pair<int, int>, string>>::iterator itStdout = NP::findTemp(listStdout, make_pair(curClNow + cl[curClNow][curCmd].stdoutToRow, curCmd));
-                                
-                                if (itStdout != listStdout.end()) { // something found
-#ifdef DEBUG
-                                    NP::log("for row " + to_string(curClNow+cl[curClNow][curCmd].stdoutToRow) + " already existed output:\n" + itStdout->second);
-#endif
-                                    itStdout->second += strChildStdoutOutput;
-                                    
-                                } else {    // nothing found
-#ifdef DEBUG
-                                    NP::log("nothing found for row " + to_string(curClNow+cl[curClNow][curCmd].stdoutToRow));
-#endif
-                                    
-                                    listStdout.push_back(make_pair(make_pair(curClNow+cl[curClNow][curCmd].stdoutToRow, 0), strChildStdoutOutput));
-                                }
-                            }
-                        }
-                        
-                    }
-                    
-                    // stderr
-                    if (strChildStderrOutput.empty()) {
-#ifdef DEBUG
-                        NP::log("[parent] child(" + to_string(curClNow) + "," + to_string(curCmd) + ") no stderr");
-#endif
-                    } else {
-#ifdef DEBUG
-                        NP::log("[parent] child(" + to_string(curClNow) + "," + to_string(curCmd) + ") has stderr to row " + to_string((curClNow)) + " + " + to_string(cl[curClNow][curCmd].stderrToRow) + "]:\n" + strChildStderrOutput);
-#endif
-                        switch (cl[curClNow][curCmd].stderrToRow) {
-                                
-                            case -1:    // to sockfd
-                                NP::writeWrapper(cl[curClNow][curCmd].sockfd, strChildStderrOutput.c_str(), strChildStderrOutput.length());
-                                break;
-                                
-                            case 0: // to next cmd
-                                listStdout.push_back(make_pair(make_pair(curClNow, curCmd+1), strChildStderrOutput));
-                                break;
-                                
-                            default:    // to next N row
-                            {
-                                // have to check if there's already something for that row
-                                list<pair<pair<int, int>, string>>::iterator itStderr = NP::findTemp(listStderr, make_pair(curClNow + cl[curClNow][curCmd].stderrToRow, curCmd));
-                                
-                                if (itStderr != listStderr.end()) { // something found
-#ifdef DEBUG
-                                    NP::log("for row " + to_string(curClNow+cl[curClNow][curCmd].stderrToRow) + " already existed output:\n" + itStderr->second);
-#endif
-                                    itStderr->second += strChildStderrOutput;
-                                    
-                                } else {    // nothing found
-#ifdef DEBUG
-                                    NP::log("nothing found for row " + to_string(curClNow+cl[curClNow][curCmd].stderrToRow));
-#endif
-                                    
-                                    listStdout.push_back(make_pair(make_pair(curClNow+cl[curClNow][curCmd].stderrToRow, 0), strChildStderrOutput));
-                                }
-                            }
-                        }
-                        
-                    }
-
             }
-            
+                
+            default:    // parent
+                
+                // if list has input to child, write it now
+                list<pair<pair<int, int>, string>>::iterator itStdout = NP::findTemp(listStdout, make_pair(no, curCmd));
+                list<pair<pair<int, int>, string>>::iterator itStderr = NP::findTemp(listStderr, make_pair(no, curCmd));
+                
+                // stdout found
+                if (itStdout != listStdout.end()) {
+                    NP::writeWrapper(input[1], (itStdout->second).c_str(), (itStdout->second).length());
+#ifdef DEBUG
+                    NP::log("[parent] (listStdout) found stdout for (" + to_string(no) + "," + to_string(curCmd) + "): (via fd " + to_string(input[1]) + ")\n" + itStdout->second);
+#endif
+                    listStdout.remove(*itStdout);
+                    
+                } else {
+#ifdef DEBUG
+                    NP::log("[parent] (listStdout) nothing found stdout for (" + to_string(no) + "," + to_string(curCmd) + ")");
+#endif
+                }
+                
+                // stderr found
+                if (itStderr != listStderr.end()) {
+                    NP::writeWrapper(input[1], (itStderr->second).c_str(), (itStderr->second).length());
+#ifdef DEBUG
+                    NP::log("[parent] (listStderr) found stderr for (" + to_string(no) + "," + to_string(curCmd) + "): (via fd " + to_string(input[1]) + ")\n" + itStderr->second);
+#endif
+                    listStderr.remove(*itStderr);
+                    
+                } else {
+#ifdef DEBUG
+                    NP::log("[parent] (listStderr) nothing found stderr for (" + to_string(no) + "," + to_string(curCmd) + ")");
+#endif
+                }
+                
+                // close write end of 3 pipes
+                string closeMsg = "[parent] close write pipe(" + to_string(no) + "," + to_string(curCmd) + ") ";
+                NP::close(input[1], -1, -1, closeMsg + "[input] error", closeMsg + "[input] done");
+                NP::close(stdoutOutput[1], -1, -1, closeMsg + "[stdoutOutput] error", closeMsg + "[stdoutOutput] done");
+                NP::close(stderrOutput[1], -1, -1, closeMsg + "[stderrOutput] error", closeMsg + "[stderrOutput] done");
+                
+                // wait
+                waitpid(child, NULL, 0);
+                
+                // read from child output
+                string strChildStdoutOutput = NP::readWrapper(stdoutOutput[0], false);
+                string strChildStderrOutput = NP::readWrapper(stderrOutput[0], false);
+                
+                // close read end of 3 pipes
+                closeMsg = "[parent] close read pipe(" + to_string(no) + "," + to_string(curCmd) + ") ";
+                NP::close(input[0], -1, -1, closeMsg + "[input] error", closeMsg + "[input] done");
+                NP::close(stdoutOutput[0], -1, -1, closeMsg + "[stdoutOutput] error", closeMsg + "[stdoutOutput] done");
+                NP::close(stderrOutput[0], -1, -1, closeMsg + "[stderrOutput] error", closeMsg + "[stderrOutput] done");
+                
+                /**
+                 *	if child has output, we may
+                 *      1) store to list ( >= 0)
+                 *      2) output to sockfd ( == -1)
+                 *      3) output to file ( == -2)
+                 */
+                // stdout
+                if (strChildStdoutOutput.empty()) {
+#ifdef DEBUG
+                    NP::log("[parent] child(" + to_string(no) + "," + to_string(curCmd) + ") no stdout");
+#endif
+                } else {
+#ifdef DEBUG
+                    NP::log("[parent] child(" + to_string(no) + "," + to_string(curCmd) + ") has stdout to row " + to_string(no) + " + " + to_string(line[curCmd].stdoutToRow) + ":\n" + strChildStdoutOutput);
+#endif
+                    switch (line[curCmd].stdoutToRow) {
+                            
+                        case -2:    // to file
+                        {
+                            ofstream fileOutput;
+                            fileOutput.open(line[curCmd].toFile, ios::out | ios::trunc);
+                            fileOutput << strChildStdoutOutput;
+                            fileOutput.close();
+                            break;
+                        }
+                            
+                        case -1:    // to sockfd
+                            NP::writeWrapper(line[curCmd].sockfd, strChildStdoutOutput.c_str(), strChildStdoutOutput.length());
+                            break;
+                            
+                        case 0: // to next cmd
+                            listStdout.push_back(make_pair(make_pair(no, curCmd+1), strChildStdoutOutput));
+                            break;
+                            
+                        default:    // to next N row
+                        {
+                            // have to check if there's already something for that row
+                            list<pair<pair<int, int>, string>>::iterator itStdout = NP::findTemp(listStdout, make_pair(no + line[curCmd].stdoutToRow, curCmd));
+                            
+                            if (itStdout != listStdout.end()) { // something found
+#ifdef DEBUG
+                                NP::log("for row " + to_string(no+line[curCmd].stdoutToRow) + " already existed output:\n" + itStdout->second);
+#endif
+                                itStdout->second += strChildStdoutOutput;
+                                
+                            } else {    // nothing found
+#ifdef DEBUG
+                                NP::log("nothing found for row " + to_string(no+line[curCmd].stdoutToRow));
+#endif
+                                
+                                listStdout.push_back(make_pair(make_pair(no+line[curCmd].stdoutToRow, 0), strChildStdoutOutput));
+                            }
+                        }
+                    }
+                    
+                }
+                
+                // stderr
+                if (strChildStderrOutput.empty()) {
+#ifdef DEBUG
+                    NP::log("[parent] child(" + to_string(no) + "," + to_string(curCmd) + ") no stderr");
+#endif
+                } else {
+#ifdef DEBUG
+                    NP::log("[parent] child(" + to_string(no) + "," + to_string(curCmd) + ") has stderr to row " + to_string((no)) + " + " + to_string(line[curCmd].stderrToRow) + ":\n" + strChildStderrOutput);
+#endif
+                    switch (line[curCmd].stderrToRow) {
+                            
+                        case -1:    // to sockfd
+                            NP::writeWrapper(line[curCmd].sockfd, strChildStderrOutput.c_str(), strChildStderrOutput.length());
+                            break;
+                            
+                        case 0: // to next cmd
+                            listStderr.push_back(make_pair(make_pair(no, curCmd+1), strChildStderrOutput));
+                            break;
+                            
+                        default:    // to next N row
+                        {
+                            // have to check if there's already something for that row
+                            list<pair<pair<int, int>, string>>::iterator itStderr = NP::findTemp(listStderr, make_pair(no + line[curCmd].stderrToRow, curCmd));
+                            
+                            if (itStderr != listStderr.end()) { // something found
+#ifdef DEBUG
+                                NP::log("for row " + to_string(no+line[curCmd].stderrToRow) + " already existed output:\n" + itStderr->second);
+#endif
+                                itStderr->second += strChildStderrOutput;
+                                
+                            } else {    // nothing found
+#ifdef DEBUG
+                                NP::log("nothing found for row " + to_string(no+line[curCmd].stderrToRow));
+#endif
+                                
+                                listStderr.push_back(make_pair(make_pair(no+line[curCmd].stderrToRow, 0), strChildStderrOutput));
+                            }
+                        }
+                    }
+                    
+                }
+//@TODO: stdout & stderr wrong order.
         }
+        
     }
+
 }
