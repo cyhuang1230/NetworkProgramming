@@ -386,10 +386,10 @@ int main(int argc, const char * argv[]) {
             close(sockfd);
             
             // Welcome msg
-            char welcomeMsg[] = "\
-**************************************** \n\
-** Welcome to the information server. ** \n\
-****************************************\n";
+            char welcomeMsg[] =
+            "****************************************\n"
+            "** Welcome to the information server. **\n"
+            "****************************************\n";
             NP::writeWrapper(newsockfd, welcomeMsg, sizeof(welcomeMsg));
             
             do {
@@ -553,11 +553,6 @@ bool NP::processRequest(int sockfd) {
                 string suffix = "].\n";
                 string msg = prefix + curStr + suffix;
                 NP::writeWrapper(sockfd, msg.c_str(), msg.length());
-                
-                // set the previous cmd to |1
-                if (!curCl.empty()) {
-                    curCl.back().stdoutToRow = 1;
-                }
                 
                 // no need to read futher cmds
                 break;
