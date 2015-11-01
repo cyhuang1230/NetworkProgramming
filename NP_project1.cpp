@@ -177,9 +177,11 @@ namespace NP {
             }
         }
         
+#ifdef DEBUG
         if (needOutput) {
             sucmsg.empty() ? NP::log("close pipes[" + to_string(i) + "][" + to_string(j) + "]") : NP::log(sucmsg);
         }
+#endif
     }
     
     list<pair<pair<int, int>, string>>::iterator findTemp(list<pair<pair<int, int>, string>>& l, const pair<int, int>& target) {
@@ -432,12 +434,41 @@ bool NP::processRequest(int sockfd) {
     list<pair<pair<int, int>, string>> listOutput;    // store output temporarily
     int counter = 0;
     
+    // due to TCP segment(1448 bytes), may cause read line error
+    // we need to manually judge if the input line is completed
+    bool isSameLine = false;
+    
 	// read cmd
-	while (cl.inputLinesLeft--) {
+	while (isSameLine || cl.inputLinesLeft--) {
 #ifdef DEBUG
         NP::log("cl.inputLinesLeft = " + to_string(cl.inputLinesLeft));
 #endif
-        strLine = NP::readWrapper(sockfd);
+        
+        if (isSameLine) {
+#ifdef DEBUG
+            NP::log("last wasnt a complete line, catenating...");
+#endif
+            
+            strLine += NP::readWrapper(sockfd, false);
+
+        } else {
+        
+            strLine = NP::readWrapper(sockfd);
+        }
+        
+        // if the line is a complete line
+        if (strLine[strLine.length()-1] == '\n') {
+#ifdef DEBUG
+            NP::log("this is a complete line");
+#endif
+            isSameLine = false;
+
+        } else {
+#ifdef DEBUG
+            NP::log("this is NOT a complete line");
+#endif
+            isSameLine = true;
+        }
         
         if (strLine.empty()) {  // empty string
             continue;
@@ -504,6 +535,10 @@ bool NP::processRequest(int sockfd) {
 #endif
             needExit = true;
             break;
+        }
+        
+        if (isSameLine) {
+            continue;
         }
         
         string curStr;
