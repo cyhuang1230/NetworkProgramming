@@ -438,13 +438,29 @@ bool NP::processRequest(int sockfd) {
     // we need to manually judge if the input line is completed
     bool isSameLine = false;
     
+    // for `batch`
+    bool isBatch = false;
+    ifstream file;
+    
 	// read cmd
 	while (isSameLine || cl.inputLinesLeft--) {
 #ifdef DEBUG
         NP::log("cl.inputLinesLeft = " + to_string(cl.inputLinesLeft));
 #endif
-        
-        if (isSameLine) {
+        if (isBatch) {
+            
+            strLine = string(); // reset strLine
+            string curStr;
+            
+            file.getline(buffer, MAX_SIZE);
+            strLine = buffer;
+            strLine += "\n";
+            
+#ifdef DEBUG
+            NP::log("cur cmd from batch:\n" + strLine);
+#endif
+            
+        } else if (isSameLine) {
 #ifdef DEBUG
             NP::log("last wasnt a complete line, catenating...");
 #endif
@@ -526,6 +542,28 @@ bool NP::processRequest(int sockfd) {
             
             needExecute = false;
             break;
+
+        }  else if (strLine.find("batch") == 0) {   // batch
+
+            string name = strLine.substr(6);
+            *remove(name.begin(), name.end(), '\n') = '\0'; // trim '\n'
+            *remove(name.begin(), name.end(), '\r') = '\0'; // trim '\r'
+            cl.inputLinesLeft++;
+
+#ifdef DEBUG
+            NP::log("batch with file: `" + name + "`");
+#endif
+            
+            file.open(name, ifstream::in);
+            
+            if (!file.good()) {
+                NP::log("bad file");
+                continue;
+            }
+            
+            isBatch = true;
+            
+            continue;
         }
         
         // exit
