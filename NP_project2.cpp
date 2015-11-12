@@ -1,9 +1,10 @@
-//  NCTU CS. Network Programming Assignment 1
-//  : A pipe-enabled shell. Please refer to hw1Spec.txt for more details.
+//  NCTU CS. Network Programming Assignment 2
+//  : RAS with chatting function. Please refer to hw2spec.txt for more details.
 
-//  Code by Denny Chien-Yu Huang, 10/25/15.
+//  Code by Denny Chien-Yu Huang, 11/12/15.
 //  Github: http://cyhuang1230.github.io/
 
+/*  For HW1 */
 //    A Command Line (a.k.a. cl)
 //     ---------------------
 //    |    --               | <- a line
@@ -20,6 +21,14 @@
 //    - Daemon
 //       |
 //        - Child process to fork and exec cmds
+
+/*  For HW2 */
+/**
+ *  Main idea:
+ *      Keep track of `sockfd`s so that can send msg to each client.
+ *
+ */
+
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -38,6 +47,7 @@
 #include <vector>
 #include <list>
 #include <utility>
+#include <arpa/inet.h>
 using namespace std;
 
 #define MAX_SIZE 15001
@@ -46,6 +56,7 @@ using namespace std;
 //#define DEBUG 1
 
 char buffer[MAX_SIZE];
+int clientSockfd[31];
 
 namespace NP {
     
@@ -306,12 +317,18 @@ namespace NP {
 		vector<vector<Command>> cmds;	// not suppose to change the order (i.e. append only) to prevent error
         int inputLinesLeft = 1; // the number of lines to input
     };
+    
+    class Client {
+        
+    };
 }
 
 int main(int argc, const char * argv[]) {
 	
 	int sockfd, newsockfd, childpid, portnum;
 	struct sockaddr_in cli_addr, serv_addr;
+    char cli_addr_str[INET_ADDRSTRLEN];
+    int cli_port;
 	socklen_t clilen;
 
 	if (argc < 2) {	// if no port provided
@@ -323,6 +340,10 @@ int main(int argc, const char * argv[]) {
 		// read port from input
 		portnum = atoi(argv[1]);
 	}
+    
+    /**
+     *	Initialization
+     */
 #ifndef LOCAL
     // set PATH to `bin:.` to satisfy requirement
     setenv("PATH", "bin:.", 1);
@@ -332,14 +353,18 @@ int main(int argc, const char * argv[]) {
         NP::err("chdir error");
     }
 #endif
+    
     // SIGCHLD to prevnet zombie process
 	struct sigaction sigchld_action;
 	sigchld_action.sa_handler = SIG_DFL;
 	sigchld_action.sa_flags = SA_NOCLDWAIT;
     sigaction(SIGCHLD, &sigchld_action, NULL);
     
+    // memset client sockfd array
+    memset(clientSockfd, -1, sizeof(clientSockfd));
+    
 #ifdef DEBUG
-	NP::log("Starting server using port: " + to_string(portnum));
+	NP::log("Starting server using port: " + to_string(portnum) + " [HW2]");
 #endif
 	
 	if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
@@ -372,8 +397,12 @@ int main(int argc, const char * argv[]) {
 #endif
 		clilen = sizeof(cli_addr);
 		newsockfd = ::accept(sockfd, (struct sockaddr *) &cli_addr, &clilen);
+        // get client addr and port
+        inet_ntop(AF_INET, &(cli_addr.sin_addr), cli_addr_str, INET_ADDRSTRLEN);
+        cli_port = cli_addr.sin_port;
+        
 #ifdef DEBUG
-        NP::log("Connection accepted");
+        NP::log("Connection from " + string(cli_addr_str) + ":" + to_string(cli_port) + " accepted.");
 #endif
 		if (newsockfd < 0) {
 			NP::err("accept error");
