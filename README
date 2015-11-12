@@ -1,0 +1,7 @@
+nplinux0.cs.nctu.edu.tw:4411
+
+Run w/o debug msg:
+make hw1
+
+Run w/ debug msg:
+make hw1_debug
