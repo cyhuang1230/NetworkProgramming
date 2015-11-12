@@ -1,5 +1,7 @@
 //  NCTU CS. Network Programming Assignment 2
-//  : RAS with chatting function. Please refer to hw2spec.txt for more details.
+//  : RAS with chatting function.
+//  : Ver.2 - Concurrent connection-oriented paradigm with shared memory.
+//  :: Please refer to `hw2spec.txt` for more details.
 
 //  Code by Denny Chien-Yu Huang, 11/12/15.
 //  Github: http://cyhuang1230.github.io/
@@ -25,8 +27,10 @@
 /*  For HW2 */
 /**
  *  Main idea:
- *      Keep track of `sockfd`s so that can send msg to each client.
- *
+ *      - Keep track of `sockfd`s so that we can send msg to each client.
+ *      - Store client data & pipe in shared memory in order to let every child can read.
+ *      - Use signal "SIGUSR1" or "SIGUSR2" to let others know when to write msg.
+ *      - Create another 30(# of user) blocks of memory to store diect msg (or broadcst msg).
  */
 
 
@@ -56,7 +60,6 @@ using namespace std;
 //#define DEBUG 1
 
 char buffer[MAX_SIZE];
-int clientSockfd[31];
 
 namespace NP {
     
@@ -318,18 +321,24 @@ namespace NP {
         int inputLinesLeft = 1; // the number of lines to input
     };
     
+    /// The required info of each client
     class Client {
-        
+    public:
+        int userid = -1;
+        int pid;
+        int sockfd;
+        string ip_port;
     };
 }
 
 int main(int argc, const char * argv[]) {
 	
 	int sockfd, newsockfd, childpid, portnum;
-	struct sockaddr_in cli_addr, serv_addr;
-    char cli_addr_str[INET_ADDRSTRLEN];
-    int cli_port;
-	socklen_t clilen;
+	struct sockaddr_in client_addr, serv_addr;
+    char client_addr_str[INET_ADDRSTRLEN]; // client ip addr
+    int client_port;   // client port
+    int cur_client_id;  // current client id
+	socklen_t client_addr_len;
 
 	if (argc < 2) {	// if no port provided
 		
@@ -359,9 +368,6 @@ int main(int argc, const char * argv[]) {
 	sigchld_action.sa_handler = SIG_DFL;
 	sigchld_action.sa_flags = SA_NOCLDWAIT;
     sigaction(SIGCHLD, &sigchld_action, NULL);
-    
-    // memset client sockfd array
-    memset(clientSockfd, -1, sizeof(clientSockfd));
     
 #ifdef DEBUG
 	NP::log("Starting server using port: " + to_string(portnum) + " [HW2]");
@@ -395,14 +401,16 @@ int main(int argc, const char * argv[]) {
 #ifdef DEBUG
         NP::log("Waiting for connections...");
 #endif
-		clilen = sizeof(cli_addr);
-		newsockfd = ::accept(sockfd, (struct sockaddr *) &cli_addr, &clilen);
+		client_addr_len = sizeof(client_addr);
+		newsockfd = ::accept(sockfd, (struct sockaddr *) &client_addr, &client_addr_len);
+        
         // get client addr and port
-        inet_ntop(AF_INET, &(cli_addr.sin_addr), cli_addr_str, INET_ADDRSTRLEN);
-        cli_port = cli_addr.sin_port;
+        inet_ntop(AF_INET, &(client_addr.sin_addr), client_addr_str, INET_ADDRSTRLEN);
+        client_port = client_addr.sin_port;
+        
         
 #ifdef DEBUG
-        NP::log("Connection from " + string(cli_addr_str) + ":" + to_string(cli_port) + " accepted.");
+        NP::log("Connection from " + string(client_addr_str) + ":" + to_string(client_port) + " accepted.");
 #endif
 		if (newsockfd < 0) {
 			NP::err("accept error");
