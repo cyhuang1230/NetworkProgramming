@@ -204,7 +204,7 @@ all clients can see what all on-line users are working.
    e.g. 
    [terminal of mine]
    % cat test.html | cat >3
-   *** Error: public pipe 3 already exists. ***
+   *** Error: public pipe #3 already exists. ***
    % 
 ----------------------------------------------------------------------------------------------------
 11. Any client can use '<(id)' to receive something from a public pipe.
@@ -224,7 +224,7 @@ all clients can see what all on-line users are working.
 	e.g. If public pipe 3 does not exists.
 	[terminal of mine]
 	% cat <3
-    *** Error: public pipe 3 does not exist yet. ***
+    *** Error: public pipe #3 does not exist yet. ***
 	%
 ----------------------------------------------------------------------------------------------------
 	
@@ -342,8 +342,8 @@ Hints:
 * ">3" or "<4" has no space between them.  So, you can distinct them 
   from "> filename" easily.  
 
-* When you handle the pipe n , and you got public pipe error messege, you should consider that command
-  as unknowned command (but don't need to show unknowned command messege).
+* When you handle the pipe n , and you got public pipe error message, you should consider that command
+  as unknown command (but don't need to show unknown command message).
 
 e.g.
 If public pipe 2 is not exists:
@@ -365,7 +365,7 @@ Case 2 :
 
 
 * The following commands will not appear in test cases:
-(and you don't need to handle the error messeges)
+(and you don't need to handle the error messages)
 
 1. 
 	% ls |1

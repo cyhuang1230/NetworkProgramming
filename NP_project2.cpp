@@ -28,11 +28,20 @@
 /**
  *  Main idea:
  *      - Keep track of `sockfd`s so that we can send msg to each client.
- *      - Store client data & pipe in shared memory in order to let every child can read.
- *      - Use signal "SIGUSR1" or "SIGUSR2" to let others know when to write msg.
- *      - Create another 30(# of user) blocks of memory to store diect msg (or broadcst msg).
+ *      - Store client data & messages in shared memory in order to let every child can read.
+ *      - Create additional MAX_USER(# of user) blocks of shared memory to store direct msg (i.e. broadcst msg).
+ *      - There's no way server can be closed properly, so, in order not to leave any shm unrelaesed,
+ *        we won't `shmget` until the first client is connected, and free shm when all clients are disconnected.
+ *        => To keep track of the number of children, `sa_handler` needs to be implemented.
+ *      - Use signal `SIGUSR1` or `SIGUSR2` to let others know when to write msg.
+ *      - Semaphore on public pipes to prevent concurrent issue.
+ *      - Use `FIFO`, a.k.a `Named pipe`, to implement public pipe. [No need to store in shm].
+ *      - Implement a generic function to send msg to all or a specific user.
  */
 
+// @TODO: implement sa_handler to log the number of children
+// @TODO: move `shmget` to after `accpet`
+// @TODO: check the number of children -> the first one: shmget; no more child: shmdt and shmctl to release shm
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -52,10 +61,14 @@
 #include <list>
 #include <utility>
 #include <arpa/inet.h>
+#include  <sys/ipc.h>
+#include  <sys/shm.h>
 using namespace std;
 
 #define MAX_SIZE 15001
 #define DEFAULT_PORT 4411
+#define MAX_USER 30
+#define MAX_PUBLIC_PIPE 100
 
 //#define DEBUG 1
 
@@ -321,14 +334,56 @@ namespace NP {
         int inputLinesLeft = 1; // the number of lines to input
     };
     
-    /// The required info of each client
+    /* For HW2 */
+
+    /// Required info of each client
     class Client {
     public:
-        int userid = -1;
+        int userId = 0;
+        string strUserName = "(no name)";
         int pid;
         int sockfd;
-        string ip_port;
+        string strIp;
+        
+        Client() {}
+        
+        Client(int id, int pid, int sockfd, string ip, string port) {
+            userId = id;
+            pid = pid;
+            sockfd = sockfd;
+            strIp = ip + "/" + port;
+        }
     };
+    
+    /// Wrapper class when dealing with clients
+    class ClientHandler {
+        
+        // initialize each element with empty client
+        Client clients[MAX_USER+1] = {};
+        
+        // Check if the given name is valid
+        // Used before setting a new name for user
+        bool isUserNameValid(string name);
+        
+        // Check if the user id is valid
+        // (Used before sending direct msg)
+        bool isUserIdValid(int clientId);
+
+    public:
+        
+        /**
+         *	Insert new client to `clients` array
+         *
+         *	@return id of new inserted client
+         */
+        int insertClient(int id, int pid, int sockfd, string ip, string port);
+        
+        string getId(int i) {
+            return clients[i].strUserName;
+        }
+    };
+    
+
 }
 
 int main(int argc, const char * argv[]) {
@@ -339,7 +394,8 @@ int main(int argc, const char * argv[]) {
     int client_port;   // client port
     int cur_client_id;  // current client id
 	socklen_t client_addr_len;
-
+    int client_counter = 0;
+    
 	if (argc < 2) {	// if no port provided
 		
 		portnum = DEFAULT_PORT;
@@ -368,6 +424,32 @@ int main(int argc, const char * argv[]) {
 	sigchld_action.sa_handler = SIG_DFL;
 	sigchld_action.sa_flags = SA_NOCLDWAIT;
     sigaction(SIGCHLD, &sigchld_action, NULL);
+    
+    // Create client handler
+    NP::ClientHandler clientHandler = NP::ClientHandler();
+    
+    // Create shared memory
+    // 1. for client data
+    int shmIdClientData = shmget(IPC_PRIVATE, sizeof(clientHandler), IPC_CREAT | IPC_EXCL | 0666);
+    if (shmIdClientData < 0) {
+        NP::err("shmIdClientData <0 with errno " + to_string(errno));
+    }
+    NP::ClientHandler* ptrShmClientData = (NP::ClientHandler*) shmat(shmIdClientData, NULL, 0);
+    memcpy(ptrShmClientData, &clientHandler, sizeof(clientHandler));
+    
+    // 2. for each user's message buffer
+    int shmIdMsgBuf = shmget(IPC_PRIVATE, 1024 * (MAX_USER+1), IPC_CREAT | IPC_EXCL | 0666);
+    if (shmIdMsgBuf < 0) {
+        NP::err("shmIdMsgBuf <0 with errno " + to_string(errno));
+    }
+    
+    for (int i = 1; i <= MAX_USER; i++) {
+        cout << ptrShmClientData->getId(i) << endl;
+    }
+    
+    shmdt(ptrShmClientData);
+    shmctl(shmIdClientData, IPC_RMID, NULL);
+    shmctl(shmIdMsgBuf, IPC_RMID, NULL);
     
 #ifdef DEBUG
 	NP::log("Starting server using port: " + to_string(portnum) + " [HW2]");
