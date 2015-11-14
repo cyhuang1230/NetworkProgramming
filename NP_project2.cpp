@@ -39,7 +39,6 @@
  *      - Implement a generic function to send msg to all or a specific user.
  */
 
-// @TODO: implement sa_handler to log the number of children
 // @TODO: move `shmget` to after `accpet`
 // @TODO: check the number of children -> the first one: shmget; no more child: shmdt and shmctl to release shm
 
@@ -355,7 +354,7 @@ namespace NP {
         }
     };
     
-    /// Wrapper class when dealing with clients
+    /// Wrapper class for clients
     class ClientHandler {
         
         // initialize each element with empty client
@@ -383,7 +382,15 @@ namespace NP {
         }
     };
     
+    int client_counter = 0;
+    
+    void child_handler(int signum) {
 
+        client_counter--;
+#ifdef DEBUG
+        NP::log("child_handler called with signum " + to_string(signum) + ", counter changed to " + to_string(client_counter));
+#endif
+    }
 }
 
 int main(int argc, const char * argv[]) {
@@ -394,7 +401,6 @@ int main(int argc, const char * argv[]) {
     int client_port;   // client port
     int cur_client_id;  // current client id
 	socklen_t client_addr_len;
-    int client_counter = 0;
     
 	if (argc < 2) {	// if no port provided
 		
@@ -421,8 +427,9 @@ int main(int argc, const char * argv[]) {
     
     // SIGCHLD to prevnet zombie process
 	struct sigaction sigchld_action;
-	sigchld_action.sa_handler = SIG_DFL;
-	sigchld_action.sa_flags = SA_NOCLDWAIT;
+    sigchld_action.sa_handler = NP::child_handler;
+//    sigchld_action.sa_handler = SIG_DFL;
+	sigchld_action.sa_flags = SA_NOCLDWAIT | SA_RESTART;
     sigaction(SIGCHLD, &sigchld_action, NULL);
     
     // Create client handler
@@ -444,7 +451,7 @@ int main(int argc, const char * argv[]) {
     }
     
     for (int i = 1; i <= MAX_USER; i++) {
-        cout << ptrShmClientData->getId(i) << endl;
+//        cout << ptrShmClientData->getId(i) << endl;
     }
     
     shmdt(ptrShmClientData);
@@ -528,6 +535,12 @@ int main(int argc, const char * argv[]) {
             exit(EXIT_SUCCESS);
             
         } else {
+
+            NP::client_counter++;
+            
+#ifdef DEBUG
+            NP::log("[parent] client_counter incremented to " + to_string(NP::client_counter));
+#endif
             
             close(newsockfd);
         }
