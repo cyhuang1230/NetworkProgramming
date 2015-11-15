@@ -39,9 +39,7 @@
  *      - Implement a generic function to send msg to all or a specific user.
  */
 
-// @TODO: Implement a generic function to send msg to all or a specific user.
-// @TODO: tell, yell
-// @TODO: SIGUSR1
+// @TODO: test tell
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -69,7 +67,8 @@ using namespace std;
 #define DEFAULT_PORT 4411
 #define MAX_USER 30
 #define MAX_PUBLIC_PIPE 100
-#define USER_MSG_BUFFER (1024*(MAX_USER+1)*sizeof(char))
+#define USER_MSG_BUFFER (1024*sizeof(char))
+#define USER_MSG_BUFFER_TOTAL (USER_MSG_BUFFER*(MAX_USER+1))
 //#define DEBUG 1
 
 char buffer[MAX_SIZE];
@@ -335,23 +334,53 @@ namespace NP {
     };
     
     /* For HW2 */
-
+    class Client;
+    class ClientHandler;
+    
+    /// for shared memory management
+    int client_counter = 0;
+    int shmIdClientData, shmIdMsgBuf;
+    ClientHandler* ptrShmClientData;
+    char* ptrShmMsgBuf;
+    Client* iAm = NULL; // for client to store his own info
+    
+    void shmdt(const void* shm) {
+        if (::shmdt(shm) == -1) {
+            NP::err("shmdt error with errno " + to_string(errno));
+        }
+    }
+    
+    void markShmToBeDestroyed(int shmId) {
+        if (shmctl(shmId, IPC_RMID, NULL) == -1) {
+            NP::err("shmctl error with errno " + to_string(errno));
+        }
+    }
+    
+    // handler for SIGCHLD
+    void signal_handler(int signum);
+    
     /// Required info of each client
     class Client {
     public:
-        int userId = 0;
+        int id = 0;
         string strUserName = "(no name)";
         int pid;
         int sockfd;
         string strIp;
+        char*  msg;
         
         Client() {}
         
-        Client(int id, int pid, int sockfd, string ip, string port) {
-            userId = id;
-            pid = pid;
-            sockfd = sockfd;
+        void set(int iId, int iPid, int iSockfd, string ip, string port) {
+            id = iId;
+            pid = iPid;
+            sockfd = iSockfd;
             strIp = ip + "/" + port;
+            msg = &ptrShmMsgBuf[id];
+        }
+        
+        void markAsInvalid() {
+            id = 0;
         }
     };
     
@@ -362,27 +391,29 @@ namespace NP {
         Client clients[MAX_USER+1] = {};
         
         // Check if the given name is valid
-        // Used before setting a new name for user
         bool isUserNameValid(string name);
         
         // Check if the user id is valid
-        // (Used before sending direct msg)
         bool isUserIdValid(int clientId);
         
         // Signal specific child
         void signalClient(int clientId);
+        
+        // Send message to specific user
+        // Raw message means that we won't change any message content
+        bool sendRawMsgToClient(int senderId, int receiverId, string msg);
         
     public:
         
         /**
          *	Insert new client to `clients` array
          *
-         *	@return id of new inserted client; -1, if error
+         *	@return pointer to new client; NULL if error
          */
-        int insertClient(int id, int pid, int sockfd, string ip, string port);
+        Client* insertClient(int pid, int sockfd, string ip, string port);
         
         /**
-         *	Remove client from `clients` and initialize with Client()
+         *	Remove client from `clients`
          *
          *	@param id	client id
          */
@@ -398,58 +429,10 @@ namespace NP {
         /**
          *	Function `yell`: broadcast message
          */
-        void yell(string msg);
+        void yell(int senderId, string msg);
     };
     
-    /// for shared memory management
-    int client_counter = 0;
-    int shmIdClientData, shmIdMsgBuf;
-    ClientHandler* ptrShmClientData;
-    char* ptrShmMsgBuf;
-    Client iAm; // for client to store his own info
-    
-    void shmdt(const void* shm) {
-        if (::shmdt(shm) == -1) {
-            NP::err("shmdt error with errno " + to_string(errno));
-        }
-    }
-    
-    void markShmToBeDestroyed(int shmId) {
-        if (shmctl(shmId, IPC_RMID, NULL) == -1) {
-            NP::err("shmctl error with errno " + to_string(errno));
-        }
-    }
-    
-    void child_handler(int signum) {
 
-        switch (signum) {
-            case SIGCHLD:
-                client_counter--;
-#ifdef DEBUG
-                NP::log("child_handler called with signum " + to_string(signum) + ", counter changed to " + to_string(client_counter));
-#endif
-                // if there's no client left, detach shm and mark it as removable
-                if (!client_counter) {
-#ifdef DEBUG
-                    NP::log("No more client... detach shm");
-#endif
-                    shmdt(ptrShmClientData);
-                    shmdt(ptrShmMsgBuf);
-                    markShmToBeDestroyed(shmIdClientData);
-                    markShmToBeDestroyed(shmIdMsgBuf);
-                }
-                break;
-                
-            case SIGUSR1:
-                // on receiving SIGUSR1,
-                // check child's own shm to get message
-#ifdef DEBUG
-                NP::log("SIGUSR1 received.");
-#endif
-                // @TODO
-                break;
-        }
-    }
 }
 
 int main(int argc, const char * argv[]) {
@@ -484,10 +467,11 @@ int main(int argc, const char * argv[]) {
 #endif
     
     // SIGCHLD to prevnet zombie process
-	struct sigaction sigchld_action;
-    sigchld_action.sa_handler = NP::child_handler;
-	sigchld_action.sa_flags = SA_NOCLDWAIT | SA_RESTART;
-    sigaction(SIGCHLD, &sigchld_action, NULL);
+	struct sigaction signal_action;
+    signal_action.sa_handler = NP::signal_handler;
+	signal_action.sa_flags = SA_NOCLDWAIT | SA_RESTART;
+    sigaction(SIGCHLD, &signal_action, NULL);
+    sigaction(SIGUSR1, &signal_action, NULL);
     
     // Initialize client handler
     NP::ClientHandler clientHandler = NP::ClientHandler();
@@ -542,19 +526,18 @@ int main(int argc, const char * argv[]) {
             memcpy(NP::ptrShmClientData, &clientHandler, sizeof(clientHandler));
             
             // 2. for each user's message buffer
-            NP::shmIdMsgBuf = shmget(IPC_PRIVATE, USER_MSG_BUFFER, IPC_CREAT | IPC_EXCL | 0666);
+            NP::shmIdMsgBuf = shmget(IPC_PRIVATE, USER_MSG_BUFFER_TOTAL, IPC_CREAT | IPC_EXCL | 0666);
             if (NP::shmIdMsgBuf < 0) {
                 NP::err("shmIdMsgBuf <0 with errno " + to_string(errno));
             }
             NP::ptrShmMsgBuf = (char*) shmat(NP::shmIdMsgBuf, NULL, 0);
-            memset(NP::ptrShmMsgBuf, 0, USER_MSG_BUFFER);
+            memset(NP::ptrShmMsgBuf, 0, USER_MSG_BUFFER_TOTAL);
         }
         
         // get client addr and port
         inet_ntop(AF_INET, &(client_addr.sin_addr), client_addr_str, INET_ADDRSTRLEN);
         client_port = client_addr.sin_port;
-        
-        
+
 #ifdef DEBUG
         NP::log("Connection from " + string(client_addr_str) + ":" + to_string(client_port) + " accepted.");
 #endif
@@ -570,6 +553,12 @@ int main(int argc, const char * argv[]) {
             
             close(sockfd);
 
+            // insert new client
+            NP::iAm = NP::ptrShmClientData->insertClient(getpid(), newsockfd, string(client_addr_str), to_string(client_port));
+            if (NP::iAm == NULL) {
+                NP::err("insert client error");
+            }
+            
             // Welcome msg
             char welcomeMsg[] =
             "****************************************\n"
@@ -577,8 +566,9 @@ int main(int argc, const char * argv[]) {
             "****************************************\n";
             NP::writeWrapper(newsockfd, welcomeMsg, strlen(welcomeMsg));
             
+            NP::ptrShmClientData->yell(NP::iAm->id, "YELL!!! from " + to_string(NP::iAm->id));
+            
             do {
-                
 #ifdef DEBUG
                 NP::log("Waiting for new cmd input");
 #endif
@@ -588,6 +578,8 @@ int main(int argc, const char * argv[]) {
 #ifdef DEBUG
             NP::log("processRequest return true, leaving...");
 #endif
+            
+            NP::ptrShmClientData->removeClient(NP::iAm->id);
             
             exit(EXIT_SUCCESS);
             
@@ -1090,12 +1082,47 @@ void NP::processCommand(const int no, vector<Command>& line, list<pair<pair<int,
 
 }
 
-/// NP::ClientHandler
+/* For HW2 */
 
+void NP::signal_handler(int signum) {
+    
+    switch (signum) {
+        case SIGCHLD:
+            client_counter--;
+#ifdef DEBUG
+            NP::log("SIGCHLD received, counter changed to " + to_string(client_counter));
+#endif
+            // if there's no client left, detach shm and mark it as removable
+            if (!client_counter) {
+#ifdef DEBUG
+                NP::log("No more client... detach shm");
+#endif
+                shmdt(ptrShmClientData);
+                shmdt(ptrShmMsgBuf);
+                markShmToBeDestroyed(shmIdClientData);
+                markShmToBeDestroyed(shmIdMsgBuf);
+            }
+            
+            break;
+            
+        case SIGUSR1:
+            // on receiving SIGUSR1,
+            // check child's own shm to get message
+#ifdef DEBUG
+            NP::log("SIGUSR1 received.");
+#endif
+            // write
+            NP::writeWrapper(iAm->sockfd, &NP::ptrShmMsgBuf[1], 1024);
+            
+            break;
+    }
+}
+
+/// NP::ClientHandler
 bool NP::ClientHandler::isUserNameValid(string name) {
    
     for (int i = 1; i <= MAX_USER; i++) {
-        if (clients[i].userId != 0 && clients[i].strUserName == name) {
+        if (clients[i].id != 0 && clients[i].strUserName == name) {
             return false;
         }
     }
@@ -1105,46 +1132,107 @@ bool NP::ClientHandler::isUserNameValid(string name) {
 
 bool NP::ClientHandler::isUserIdValid(int clientId) {
 
-    return (clients[clientId].userId > 0);
+    return (clients[clientId].id > 0);
 }
 
 void NP::ClientHandler::signalClient(int clientId) {
+#ifdef DEBUG
+    NP::log("signal-ing client " + to_string(clientId) + " with pid " + to_string(clients[clientId].pid));
+#endif
     
     if (!isUserIdValid(clientId)) {
         NP::err("Try to send signal to invalid client with id " + to_string(clientId));
     }
     
-    if(!kill(clients[clientId].pid, SIGUSR1)) {
+    if(kill(clients[clientId].pid, SIGUSR1) == -1) {
         NP::err("Failed to send to client " + to_string(clientId) + ", errno = " + to_string(errno));
     }
 }
 
-int NP::ClientHandler::insertClient(int id, int pid, int sockfd, string ip, string port) {
+bool NP::ClientHandler::sendRawMsgToClient(int senderId, int receiverId, string msg) {
+#ifdef DEBUG
+    NP::log("sendMsgToClient: (" + to_string(senderId) + " -> " + to_string(receiverId) + "): `" + msg + "`");
+#endif
+
+    // check sender & recervier id validity
+    if (!isUserIdValid(receiverId) || !isUserIdValid(senderId)) {
+        return false;
+    }
     
+    // clear shm
+    memset(clients[receiverId].msg, 0, USER_MSG_BUFFER);
+    
+    // put msg in shm
+    memcpy(clients[receiverId].msg, msg.c_str(), msg.length());
+    
+    // signal receiver
+    signalClient(receiverId);
+
+    return true;
+}
+
+NP::Client* NP::ClientHandler::insertClient(int pid, int sockfd, string ip, string port) {
+
     // get an id for new client
     int newId = -1;
     for (int i = 1; i <= MAX_USER; i++) {
-        if (clients[i].userId == 0) {
+        if (clients[i].id == 0) {
             newId = i;
+            break;
         }
     }
     
-    if (newId != -1) {
-        clients[newId] = Client(id, pid, sockfd, ip, port);
+    if (newId == -1) {
+        return NULL;
     }
+
+    clients[newId].set(newId, pid, sockfd, ip, port);
     
-    return newId;
+#ifdef DEBUG
+    NP::log("inserted client with id = " + to_string(clients[newId].id));
+#endif
+    
+    return &clients[newId];
 }
 
 void NP::ClientHandler::removeClient(int id) {
+#ifdef DEBUG
+    NP::log("removing client " + to_string(id));
+#endif
     
     if (!isUserIdValid(id)) {
         NP::err("Try to remove invalid id " + to_string(id));
     }
     
-    clients[id] = Client();
+    clients[id].markAsInvalid();
 }
 
-bool NP::ClientHandler::tell(int senderId, int receiverId, string msg);
+bool NP::ClientHandler::tell(int senderId, int receiverId, string msg) {
+#ifdef DEBUG
+    NP::log("telling: (" + to_string(senderId) + " -> " + to_string(receiverId) + "): `" + msg + "`");
+#endif
+    
+    msg = "*** " + clients[senderId].strUserName + " told you ***: " + msg;
+    
+    return sendRawMsgToClient(senderId, receiverId, msg);
+}
 
-void NP::ClientHandler::yell(string msg);
+void NP::ClientHandler::yell(int senderId, string msg) {
+#ifdef DEBUG
+    NP::log("yelling from " + to_string(senderId) + ": `" + msg + "`");
+#endif
+    
+    msg = "*** " + clients[senderId].strUserName + " yelled ***: " + msg;
+    for (int i = 1; i <= MAX_USER; i++) {
+        
+        if (!isUserIdValid(i)) {
+            // no longer valid id
+            // => id behind must also be invalid
+            return;
+        }
+        
+        if (!sendRawMsgToClient(senderId, i, msg)) {
+            NP::err("error when yelling from " + to_string(senderId) + " to " + to_string(i) + ": `" + msg + "`");
+        }
+    }
+}
