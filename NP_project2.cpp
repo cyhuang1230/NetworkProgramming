@@ -39,9 +39,6 @@
  *      - Implement a generic function to send msg to all or a specific user.
  */
 
-// @TODO: move `shmget` to after `accpet`
-// @TODO: check the number of children -> the first one: shmget; no more child: shmdt and shmctl to release shm
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/types.h>
@@ -68,7 +65,7 @@ using namespace std;
 #define DEFAULT_PORT 4411
 #define MAX_USER 30
 #define MAX_PUBLIC_PIPE 100
-
+#define USER_MSG_BUFFER (1024*10*(MAX_USER+1))
 //#define DEBUG 1
 
 char buffer[MAX_SIZE];
@@ -377,19 +374,47 @@ namespace NP {
          */
         int insertClient(int id, int pid, int sockfd, string ip, string port);
         
-        string getId(int i) {
+        string getName(int i) {
             return clients[i].strUserName;
         }
+        
     };
     
+    /// for shared memory management
     int client_counter = 0;
+    int shmIdClientData, shmIdMsgBuf;
+    ClientHandler* ptrShmClientData;
+    void* ptrShmMsgBuf;
+    
+    void shmdt(const void* shm) {
+        if (::shmdt(shm) == -1) {
+            NP::err("shmdt error with errno " + to_string(errno));
+        }
+    }
+    
+    void markShmToBeDestroyed(int shmId) {
+        if (shmctl(shmId, IPC_RMID, NULL) == -1) {
+            NP::err("shmctl error with errno " + to_string(errno));
+        }
+    }
     
     void child_handler(int signum) {
 
         client_counter--;
+        
 #ifdef DEBUG
         NP::log("child_handler called with signum " + to_string(signum) + ", counter changed to " + to_string(client_counter));
 #endif
+        // if there's no client left, detach shm and mark it as removable
+        if (!client_counter) {
+#ifdef DEBUG
+            NP::log("No more client... detach shm");
+#endif
+            shmdt(ptrShmClientData);
+            shmdt(ptrShmMsgBuf);
+            markShmToBeDestroyed(shmIdClientData);
+            markShmToBeDestroyed(shmIdMsgBuf);
+        }
     }
 }
 
@@ -428,35 +453,11 @@ int main(int argc, const char * argv[]) {
     // SIGCHLD to prevnet zombie process
 	struct sigaction sigchld_action;
     sigchld_action.sa_handler = NP::child_handler;
-//    sigchld_action.sa_handler = SIG_DFL;
 	sigchld_action.sa_flags = SA_NOCLDWAIT | SA_RESTART;
     sigaction(SIGCHLD, &sigchld_action, NULL);
     
-    // Create client handler
+    // Initialize client handler
     NP::ClientHandler clientHandler = NP::ClientHandler();
-    
-    // Create shared memory
-    // 1. for client data
-    int shmIdClientData = shmget(IPC_PRIVATE, sizeof(clientHandler), IPC_CREAT | IPC_EXCL | 0666);
-    if (shmIdClientData < 0) {
-        NP::err("shmIdClientData <0 with errno " + to_string(errno));
-    }
-    NP::ClientHandler* ptrShmClientData = (NP::ClientHandler*) shmat(shmIdClientData, NULL, 0);
-    memcpy(ptrShmClientData, &clientHandler, sizeof(clientHandler));
-    
-    // 2. for each user's message buffer
-    int shmIdMsgBuf = shmget(IPC_PRIVATE, 1024 * (MAX_USER+1), IPC_CREAT | IPC_EXCL | 0666);
-    if (shmIdMsgBuf < 0) {
-        NP::err("shmIdMsgBuf <0 with errno " + to_string(errno));
-    }
-    
-    for (int i = 1; i <= MAX_USER; i++) {
-//        cout << ptrShmClientData->getId(i) << endl;
-    }
-    
-    shmdt(ptrShmClientData);
-    shmctl(shmIdClientData, IPC_RMID, NULL);
-    shmctl(shmIdMsgBuf, IPC_RMID, NULL);
     
 #ifdef DEBUG
 	NP::log("Starting server using port: " + to_string(portnum) + " [HW2]");
@@ -493,6 +494,29 @@ int main(int argc, const char * argv[]) {
 		client_addr_len = sizeof(client_addr);
 		newsockfd = ::accept(sockfd, (struct sockaddr *) &client_addr, &client_addr_len);
         
+        // check how many clients are connected,
+        // if it's the first one, create shm.
+        if (NP::client_counter == 0) {
+            
+            // Create shared memory
+            // 1. for client data
+            NP::shmIdClientData = shmget(IPC_PRIVATE, sizeof(clientHandler), IPC_CREAT | IPC_EXCL | 0666);
+            if (NP::shmIdClientData < 0) {
+                NP::err("shmIdClientData <0 with errno " + to_string(errno));
+            }
+            // prepare data
+            NP::ptrShmClientData = (NP::ClientHandler*) shmat(NP::shmIdClientData, NULL, 0);
+            memcpy(NP::ptrShmClientData, &clientHandler, sizeof(clientHandler));
+            
+            // 2. for each user's message buffer
+            NP::shmIdMsgBuf = shmget(IPC_PRIVATE, USER_MSG_BUFFER, IPC_CREAT | IPC_EXCL | 0666);
+            if (NP::shmIdMsgBuf < 0) {
+                NP::err("shmIdMsgBuf <0 with errno " + to_string(errno));
+            }
+            NP::ptrShmMsgBuf = shmat(NP::shmIdMsgBuf, NULL, 0);
+            memset(NP::ptrShmMsgBuf, 0, USER_MSG_BUFFER);
+        }
+        
         // get client addr and port
         inet_ntop(AF_INET, &(client_addr.sin_addr), client_addr_str, INET_ADDRSTRLEN);
         client_port = client_addr.sin_port;
@@ -512,7 +536,7 @@ int main(int argc, const char * argv[]) {
         } else if (childpid == 0) { // child process
             
             close(sockfd);
-            
+
             // Welcome msg
             char welcomeMsg[] =
             "****************************************\n"
