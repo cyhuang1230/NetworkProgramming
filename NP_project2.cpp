@@ -1,6 +1,6 @@
 //  NCTU CS. Network Programming Assignment 2
-//  : RAS with chatting function.
-//  : Ver.2 - Concurrent connection-oriented paradigm with shared memory.
+//  : RAS with chat.
+//  : Ver.II - Concurrent connection-oriented paradigm with shared memory.
 //  :: Please refer to `hw2spec.txt` for more details.
 
 //  Code by Denny Chien-Yu Huang, 11/12/15.
@@ -39,6 +39,10 @@
  *      - Implement a generic function to send msg to all or a specific user.
  */
 
+// @TODO: Implement a generic function to send msg to all or a specific user.
+// @TODO: tell, yell
+// @TODO: SIGUSR1
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/types.h>
@@ -57,15 +61,15 @@
 #include <list>
 #include <utility>
 #include <arpa/inet.h>
-#include  <sys/ipc.h>
-#include  <sys/shm.h>
+#include <sys/ipc.h>
+#include <sys/shm.h>
 using namespace std;
 
 #define MAX_SIZE 15001
 #define DEFAULT_PORT 4411
 #define MAX_USER 30
 #define MAX_PUBLIC_PIPE 100
-#define USER_MSG_BUFFER (1024*10*(MAX_USER+1))
+#define USER_MSG_BUFFER (1024*(MAX_USER+1)*sizeof(char))
 //#define DEBUG 1
 
 char buffer[MAX_SIZE];
@@ -364,27 +368,45 @@ namespace NP {
         // Check if the user id is valid
         // (Used before sending direct msg)
         bool isUserIdValid(int clientId);
-
+        
+        // Signal specific child
+        void signalClient(int clientId);
+        
     public:
         
         /**
          *	Insert new client to `clients` array
          *
-         *	@return id of new inserted client
+         *	@return id of new inserted client; -1, if error
          */
         int insertClient(int id, int pid, int sockfd, string ip, string port);
         
-        string getName(int i) {
-            return clients[i].strUserName;
-        }
+        /**
+         *	Remove client from `clients` and initialize with Client()
+         *
+         *	@param id	client id
+         */
+        void removeClient(int id);
         
+        /**
+         *	Function `tell`: send msg to spcific user
+         *
+         *	@return true if operation succeeded; false, otherwise.
+         */
+        bool tell(int senderId, int receiverId, string msg);
+        
+        /**
+         *	Function `yell`: broadcast message
+         */
+        void yell(string msg);
     };
     
     /// for shared memory management
     int client_counter = 0;
     int shmIdClientData, shmIdMsgBuf;
     ClientHandler* ptrShmClientData;
-    void* ptrShmMsgBuf;
+    char* ptrShmMsgBuf;
+    Client iAm; // for client to store his own info
     
     void shmdt(const void* shm) {
         if (::shmdt(shm) == -1) {
@@ -400,20 +422,32 @@ namespace NP {
     
     void child_handler(int signum) {
 
-        client_counter--;
-        
+        switch (signum) {
+            case SIGCHLD:
+                client_counter--;
 #ifdef DEBUG
-        NP::log("child_handler called with signum " + to_string(signum) + ", counter changed to " + to_string(client_counter));
+                NP::log("child_handler called with signum " + to_string(signum) + ", counter changed to " + to_string(client_counter));
 #endif
-        // if there's no client left, detach shm and mark it as removable
-        if (!client_counter) {
+                // if there's no client left, detach shm and mark it as removable
+                if (!client_counter) {
 #ifdef DEBUG
-            NP::log("No more client... detach shm");
+                    NP::log("No more client... detach shm");
 #endif
-            shmdt(ptrShmClientData);
-            shmdt(ptrShmMsgBuf);
-            markShmToBeDestroyed(shmIdClientData);
-            markShmToBeDestroyed(shmIdMsgBuf);
+                    shmdt(ptrShmClientData);
+                    shmdt(ptrShmMsgBuf);
+                    markShmToBeDestroyed(shmIdClientData);
+                    markShmToBeDestroyed(shmIdMsgBuf);
+                }
+                break;
+                
+            case SIGUSR1:
+                // on receiving SIGUSR1,
+                // check child's own shm to get message
+#ifdef DEBUG
+                NP::log("SIGUSR1 received.");
+#endif
+                // @TODO
+                break;
         }
     }
 }
@@ -424,7 +458,6 @@ int main(int argc, const char * argv[]) {
 	struct sockaddr_in client_addr, serv_addr;
     char client_addr_str[INET_ADDRSTRLEN]; // client ip addr
     int client_port;   // client port
-    int cur_client_id;  // current client id
 	socklen_t client_addr_len;
     
 	if (argc < 2) {	// if no port provided
@@ -513,7 +546,7 @@ int main(int argc, const char * argv[]) {
             if (NP::shmIdMsgBuf < 0) {
                 NP::err("shmIdMsgBuf <0 with errno " + to_string(errno));
             }
-            NP::ptrShmMsgBuf = shmat(NP::shmIdMsgBuf, NULL, 0);
+            NP::ptrShmMsgBuf = (char*) shmat(NP::shmIdMsgBuf, NULL, 0);
             memset(NP::ptrShmMsgBuf, 0, USER_MSG_BUFFER);
         }
         
@@ -1056,3 +1089,62 @@ void NP::processCommand(const int no, vector<Command>& line, list<pair<pair<int,
     }
 
 }
+
+/// NP::ClientHandler
+
+bool NP::ClientHandler::isUserNameValid(string name) {
+   
+    for (int i = 1; i <= MAX_USER; i++) {
+        if (clients[i].userId != 0 && clients[i].strUserName == name) {
+            return false;
+        }
+    }
+    
+    return true;
+}
+
+bool NP::ClientHandler::isUserIdValid(int clientId) {
+
+    return (clients[clientId].userId > 0);
+}
+
+void NP::ClientHandler::signalClient(int clientId) {
+    
+    if (!isUserIdValid(clientId)) {
+        NP::err("Try to send signal to invalid client with id " + to_string(clientId));
+    }
+    
+    if(!kill(clients[clientId].pid, SIGUSR1)) {
+        NP::err("Failed to send to client " + to_string(clientId) + ", errno = " + to_string(errno));
+    }
+}
+
+int NP::ClientHandler::insertClient(int id, int pid, int sockfd, string ip, string port) {
+    
+    // get an id for new client
+    int newId = -1;
+    for (int i = 1; i <= MAX_USER; i++) {
+        if (clients[i].userId == 0) {
+            newId = i;
+        }
+    }
+    
+    if (newId != -1) {
+        clients[newId] = Client(id, pid, sockfd, ip, port);
+    }
+    
+    return newId;
+}
+
+void NP::ClientHandler::removeClient(int id) {
+    
+    if (!isUserIdValid(id)) {
+        NP::err("Try to remove invalid id " + to_string(id));
+    }
+    
+    clients[id] = Client();
+}
+
+bool NP::ClientHandler::tell(int senderId, int receiverId, string msg);
+
+void NP::ClientHandler::yell(string msg);
