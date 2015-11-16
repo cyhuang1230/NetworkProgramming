@@ -69,6 +69,7 @@ using namespace std;
 #define MAX_PUBLIC_PIPE 100
 #define USER_MSG_BUFFER (1024*sizeof(char))
 #define USER_MSG_BUFFER_TOTAL (USER_MSG_BUFFER*(MAX_USER+1))
+#define USER_NAME_SIZE 20
 //#define DEBUG 1
 
 char buffer[MAX_SIZE];
@@ -365,7 +366,7 @@ namespace NP {
     class Client {
     public:
         int id = 0;
-        string strUserName = "(no name)";
+        char userName[USER_NAME_SIZE+1] = "(no name)";
         int pid;
         int sockfd;
         char ip[INET_ADDRSTRLEN];
@@ -398,6 +399,9 @@ namespace NP {
             return "(" + to_string(id) + ", " + to_string(pid) + ", " + to_string(sockfd) + ", " + string(ip) + ":" + to_string(port) + ")";
         }
         
+        string getName() {
+            return string(userName);
+        }
     };
     
     /// Wrapper class for clients
@@ -405,9 +409,6 @@ namespace NP {
         
         // initialize each element with empty client
         Client clients[MAX_USER+1] = {};
-        
-        // Check if the given name is valid
-        bool isUserNameValid(string name);
         
         // Check if the user id is valid
         bool isUserIdValid(int clientId);
@@ -464,6 +465,13 @@ namespace NP {
          *	@return string for caller to write
          */
         string who(int callerId);
+        
+        /**
+         *	Function `name`: set new name
+         *
+         *	@return true if operation succeded; false, otherwise.
+         */
+        bool name(int senderId, string newName);
     };
     
 }
@@ -777,7 +785,6 @@ bool NP::processRequest(int sockfd) {
             }
             
             isBatch = true;
-            
             continue;
 
         } else if (strLine.find("who") == 0) {  // who
@@ -786,6 +793,30 @@ bool NP::processRequest(int sockfd) {
             NP::writeWrapper(sockfd, whoMsg.c_str(), whoMsg.length());
 
             needExecute = false;
+            // @WARNING: should change to continue; to allow pipe?
+            break;
+            
+        } else if (strLine.find("name") == 0) {  // name
+            
+            string newName = strLine.substr(5);
+            *remove(newName.begin(), newName.end(), '\n') = '\0';
+            *remove(newName.begin(), newName.end(), '\r') = '\0'; // trim '\r'
+
+            if (NP::ptrShmClientData->name(NP::iAm->id, newName)) {
+            
+                // name successfully
+                string ret = "*** User from " + NP::iAm->getIpRepresentation() + " is named '" + newName +"'. ***\n";
+                NP::ptrShmClientData->broadcastRawMsg(NP::iAm->id, ret);
+                
+            } else {
+                
+                // failed to name
+                string ret = "*** User '" + newName + "' already exists. ***\n";
+                NP::writeWrapper(sockfd, ret.c_str(), ret.length());
+            }
+            
+            needExecute = false;
+            // @WARNING: should change to continue; to allow pipe?
             break;
             
         } else if (strLine.find("debug") == 0) {  // debug
@@ -1168,17 +1199,6 @@ void NP::signal_handler(int signum) {
 }
 
 /// NP::ClientHandler
-bool NP::ClientHandler::isUserNameValid(string name) {
-   
-    for (int i = 1; i <= MAX_USER; i++) {
-        if (clients[i].id != 0 && clients[i].strUserName == name) {
-            return false;
-        }
-    }
-    
-    return true;
-}
-
 bool NP::ClientHandler::isUserIdValid(int clientId) {
 
     return (clients[clientId].id > 0);
@@ -1280,7 +1300,7 @@ bool NP::ClientHandler::tell(int senderId, int receiverId, string msg) {
     NP::log("telling: (" + to_string(senderId) + " -> " + to_string(receiverId) + "):\n" + msg);
 #endif
     
-    msg = "*** " + clients[senderId].strUserName + " told you ***: " + msg;
+    msg = "*** " + clients[senderId].getName() + " told you ***: " + msg;
     
     return sendRawMsgToClient(senderId, receiverId, msg);
 }
@@ -1290,7 +1310,7 @@ void NP::ClientHandler::yell(int senderId, string msg) {
     NP::log("yelling from " + to_string(senderId) + ":\n" + msg);
 #endif
     
-    msg = "*** " + clients[senderId].strUserName + " yelled ***: " + msg;
+    msg = "*** " + clients[senderId].getName() + " yelled ***: " + msg;
     
     broadcastRawMsg(senderId, msg);
 }
@@ -1307,7 +1327,7 @@ string NP::ClientHandler::who(int callerId) {
         
         NP::log("who -> this is " + clients[i].print());
         
-        msg += to_string(i) + "\t" + clients[i].strUserName + "\t" + clients[i].getIpRepresentation() + "\t";
+        msg += to_string(i) + "\t" + clients[i].getName() + "\t" + clients[i].getIpRepresentation() + "\t";
         
         if (i == callerId) {
             
@@ -1321,6 +1341,25 @@ string NP::ClientHandler::who(int callerId) {
     
     return msg;
 }
+
+bool NP::ClientHandler::name(int senderId, string newName) {
+
+    for (int i = 1; i <= MAX_USER; i++) {
+        
+        if (!isUserIdValid(i)) {
+            continue;
+        }
+        
+        if (strncmp(clients[i].userName, newName.c_str(), USER_NAME_SIZE) == 0) {
+            return false;
+        }
+    }
+    
+    strcpy(clients[senderId].userName, newName.c_str());
+    return true;
+}
+
+
 
 void NP::debug(int sockfd) {
     
