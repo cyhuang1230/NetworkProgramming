@@ -67,7 +67,7 @@ using namespace std;
 #define DEFAULT_PORT 4411
 #define MAX_USER 30
 #define MAX_PUBLIC_PIPE 100
-#define USER_MSG_BUFFER (1024*sizeof(char))
+#define USER_MSG_BUFFER (1025*sizeof(char))
 #define USER_MSG_BUFFER_TOTAL (USER_MSG_BUFFER*(MAX_USER+1))
 #define USER_NAME_SIZE 20
 //#define DEBUG 1
@@ -798,9 +798,7 @@ bool NP::processRequest(int sockfd) {
             
         } else if (strLine.find("name") == 0) {  // name
             
-            string newName = strLine.substr(5);
-            *remove(newName.begin(), newName.end(), '\n') = '\0';
-            *remove(newName.begin(), newName.end(), '\r') = '\0'; // trim '\r'
+            string newName = strLine.substr(5, strLine.find('\r')-5);
 
             if (NP::ptrShmClientData->name(NP::iAm->id, newName)) {
             
@@ -818,6 +816,39 @@ bool NP::processRequest(int sockfd) {
             needExecute = false;
             // @WARNING: should change to continue; to allow pipe?
             break;
+            
+        } else if (strLine.find("yell") == 0) {  // yell
+            
+            string msg = strLine.substr(5, strLine.find('\r')-5);
+            
+            NP::ptrShmClientData->yell(NP::iAm->id, msg);
+            
+            needExecute = false;
+            // @WARNING: should change to continue; to allow pipe?
+            break;
+            
+        } else if (strLine.find("tell") == 0) {  // tell
+            
+//            string msg = strLine.substr(5);
+//            *remove(msg.begin(), msg.end(), '\n') = '\0';
+//            *remove(msg.begin(), msg.end(), '\r') = '\0'; // trim '\r'
+//            
+//            if (NP::ptrShmClientData->name(NP::iAm->id, msg)) {
+//                
+//                // name successfully
+//                string ret = "*** User from " + NP::iAm->getIpRepresentation() + " is named '" + msg +"'. ***\n";
+//                NP::ptrShmClientData->broadcastRawMsg(NP::iAm->id, ret);
+//                
+//            } else {
+//                
+//                // failed to name
+//                string ret = "*** User '" + msg + "' already exists. ***\n";
+//                NP::writeWrapper(sockfd, ret.c_str(), ret.length());
+//            }
+//            
+//            needExecute = false;
+//            // @WARNING: should change to continue; to allow pipe?
+//            break;
             
         } else if (strLine.find("debug") == 0) {  // debug
             
@@ -1268,7 +1299,9 @@ bool NP::ClientHandler::sendRawMsgToClient(int senderId, int receiverId, string 
     memset(clients[receiverId].msg, 0, USER_MSG_BUFFER);
     
     // put msg in shm
-    memcpy(clients[receiverId].msg, msg.c_str(), msg.length());
+    size_t len = msg.length() > 1024 ? 1024 : msg.length();
+    strncpy(clients[receiverId].msg, msg.c_str(), len);
+    clients[receiverId].msg[len] = '\0';
     
     // signal receiver
     signalClient(receiverId);
