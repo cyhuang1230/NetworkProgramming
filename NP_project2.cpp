@@ -33,7 +33,7 @@
  *      - There's no way server can be closed properly, so, in order not to leave any shm unrelaesed,
  *        we won't `shmget` until the first client is connected, and free shm when all clients are disconnected.
  *        => To keep track of the number of children, `sa_handler` needs to be implemented.
- *      - Use signal `SIGUSR1` or `SIGUSR2` to let others know when to write msg.
+ *      - Use signal `SIGUSR1` to let others know when to write msg.
  *      - Semaphore on public pipes to prevent concurrent issue.
  *      - Use `FIFO`, a.k.a `Named pipe`, to implement public pipe. [No need to store in shm].
  *      - Implement a generic function to send msg to all or a specific user.
@@ -399,10 +399,6 @@ namespace NP {
         // Signal specific child
         void signalClient(int clientId);
         
-        // Send message to specific user
-        // Raw message means that we won't change any message content
-        bool sendRawMsgToClient(int senderId, int receiverId, string msg);
-        
     public:
         
         /**
@@ -420,6 +416,19 @@ namespace NP {
         void removeClient(int id);
         
         /**
+         *	Send message to a specific user
+         *  Raw message means that we won't change any message content
+         *
+         *	@return true if operation succeeded; false, otherwise
+         */
+        bool sendRawMsgToClient(int senderId, int receiverId, string msg);
+        
+        /**
+         *	Send message to every client
+         */
+        void broadcastRawMsg(int senderId, string msg);
+        
+        /**
          *	Function `tell`: send msg to spcific user
          *
          *	@return true if operation succeeded; false, otherwise.
@@ -432,7 +441,6 @@ namespace NP {
         void yell(int senderId, string msg);
     };
     
-
 }
 
 int main(int argc, const char * argv[]) {
@@ -566,7 +574,8 @@ int main(int argc, const char * argv[]) {
             "****************************************\n";
             NP::writeWrapper(newsockfd, welcomeMsg, strlen(welcomeMsg));
             
-            NP::ptrShmClientData->yell(NP::iAm->id, "YELL!!! from " + to_string(NP::iAm->id));
+            // broadcast incoming user
+            NP::ptrShmClientData->broadcastRawMsg(NP::iAm->id, "*** User '(no name)' entered from " + NP::iAm->strIp + ". ***\n");
             
             do {
 #ifdef DEBUG
@@ -1149,6 +1158,42 @@ void NP::ClientHandler::signalClient(int clientId) {
     }
 }
 
+NP::Client* NP::ClientHandler::insertClient(int pid, int sockfd, string ip, string port) {
+    
+    // get an id for new client
+    int newId = -1;
+    for (int i = 1; i <= MAX_USER; i++) {
+        if (clients[i].id == 0) {
+            newId = i;
+            break;
+        }
+    }
+    
+    if (newId == -1) {
+        return NULL;
+    }
+    
+    clients[newId].set(newId, pid, sockfd, ip, port);
+    
+#ifdef DEBUG
+    NP::log("inserted client with id = " + to_string(clients[newId].id));
+#endif
+    
+    return &clients[newId];
+}
+
+void NP::ClientHandler::removeClient(int id) {
+#ifdef DEBUG
+    NP::log("removing client " + to_string(id));
+#endif
+    
+    if (!isUserIdValid(id)) {
+        NP::err("Try to remove invalid id " + to_string(id));
+    }
+    
+    clients[id].markAsInvalid();
+}
+
 bool NP::ClientHandler::sendRawMsgToClient(int senderId, int receiverId, string msg) {
 #ifdef DEBUG
     NP::log("sendMsgToClient: (" + to_string(senderId) + " -> " + to_string(receiverId) + "): `" + msg + "`");
@@ -1171,40 +1216,23 @@ bool NP::ClientHandler::sendRawMsgToClient(int senderId, int receiverId, string 
     return true;
 }
 
-NP::Client* NP::ClientHandler::insertClient(int pid, int sockfd, string ip, string port) {
-
-    // get an id for new client
-    int newId = -1;
+void NP::ClientHandler::broadcastRawMsg(int senderId, string msg) {
+#ifdef DEBUG
+    NP::log("broadcastRawMsg from " + to_string(senderId) + ": `" + msg + "`");
+#endif
+    
     for (int i = 1; i <= MAX_USER; i++) {
-        if (clients[i].id == 0) {
-            newId = i;
-            break;
+        
+        if (!isUserIdValid(i)) {
+            // no longer valid id
+            // => id behind must also be invalid
+            return;
+        }
+        
+        if (!sendRawMsgToClient(senderId, i, msg)) {
+            NP::err("error when broadcasting from " + to_string(senderId) + " to " + to_string(i) + ": `" + msg + "`");
         }
     }
-    
-    if (newId == -1) {
-        return NULL;
-    }
-
-    clients[newId].set(newId, pid, sockfd, ip, port);
-    
-#ifdef DEBUG
-    NP::log("inserted client with id = " + to_string(clients[newId].id));
-#endif
-    
-    return &clients[newId];
-}
-
-void NP::ClientHandler::removeClient(int id) {
-#ifdef DEBUG
-    NP::log("removing client " + to_string(id));
-#endif
-    
-    if (!isUserIdValid(id)) {
-        NP::err("Try to remove invalid id " + to_string(id));
-    }
-    
-    clients[id].markAsInvalid();
 }
 
 bool NP::ClientHandler::tell(int senderId, int receiverId, string msg) {
@@ -1223,16 +1251,6 @@ void NP::ClientHandler::yell(int senderId, string msg) {
 #endif
     
     msg = "*** " + clients[senderId].strUserName + " yelled ***: " + msg;
-    for (int i = 1; i <= MAX_USER; i++) {
-        
-        if (!isUserIdValid(i)) {
-            // no longer valid id
-            // => id behind must also be invalid
-            return;
-        }
-        
-        if (!sendRawMsgToClient(senderId, i, msg)) {
-            NP::err("error when yelling from " + to_string(senderId) + " to " + to_string(i) + ": `" + msg + "`");
-        }
-    }
+    
+    broadcastRawMsg(senderId, msg);
 }

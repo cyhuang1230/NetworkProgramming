@@ -245,7 +245,7 @@ all clients can see what all on-line users are working.
    following error message:
    *** Error: the pipe #(id) does not exist yet. *** 
    
-   A pipe can be taken only one time. After the pipe is taken, it is distroyed.
+   A pipe can be taken only one time. After the pipe is taken, it is destroyed.
    If he/she tries to take it again, he/she will receive the error message above.
 
    e.g. Assume there are only 2 clients connect to server with client id 1, and 2.
