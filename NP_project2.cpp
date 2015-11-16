@@ -334,6 +334,8 @@ namespace NP {
     };
     
     /* For HW2 */
+    void debug(int);
+    
     class Client;
     class ClientHandler;
     
@@ -366,22 +368,36 @@ namespace NP {
         string strUserName = "(no name)";
         int pid;
         int sockfd;
-        string strIp;
+        char ip[INET_ADDRSTRLEN];
+        int port;
         char*  msg;
         
         Client() {}
         
-        void set(int iId, int iPid, int iSockfd, string ip, string port) {
+        void set(int iId, int iPid, int iSockfd, char cIp[INET_ADDRSTRLEN], int iPort) {
+#ifdef DEBUG
+            NP::log("set client.. (" + to_string(id) + ", " + to_string(iPid) + ", " + to_string(iSockfd) + ", " + string(cIp) + "/" + to_string(iPort) + ")");
+#endif
             id = iId;
             pid = iPid;
             sockfd = iSockfd;
-            strIp = ip + "/" + port;
+            strncpy(ip, cIp, INET_ADDRSTRLEN);
+            port = iPort;
             msg = &ptrShmMsgBuf[id];
+        }
+        
+        string getIpRepresentation() {
+            return string(ip) + "/" + to_string(port);
         }
         
         void markAsInvalid() {
             id = 0;
         }
+        
+        string print() {
+            return "(" + to_string(id) + ", " + to_string(pid) + ", " + to_string(sockfd) + ", " + string(ip) + ":" + to_string(port) + ")";
+        }
+        
     };
     
     /// Wrapper class for clients
@@ -401,12 +417,14 @@ namespace NP {
         
     public:
         
+        friend void debug(int);
+        
         /**
          *	Insert new client to `clients` array
          *
          *	@return pointer to new client; NULL if error
          */
-        Client* insertClient(int pid, int sockfd, string ip, string port);
+        Client* insertClient(int pid, int sockfd, char ip[INET_ADDRSTRLEN], int port);
         
         /**
          *	Remove client from `clients`
@@ -439,6 +457,13 @@ namespace NP {
          *	Function `yell`: broadcast message
          */
         void yell(int senderId, string msg);
+        
+        /**
+         *	Function `who`: show client list
+         *
+         *	@return string for caller to write
+         */
+        string who(int callerId);
     };
     
 }
@@ -562,7 +587,7 @@ int main(int argc, const char * argv[]) {
             close(sockfd);
 
             // insert new client
-            NP::iAm = NP::ptrShmClientData->insertClient(getpid(), newsockfd, string(client_addr_str), to_string(client_port));
+            NP::iAm = NP::ptrShmClientData->insertClient(getpid(), newsockfd, client_addr_str, client_port);
             if (NP::iAm == NULL) {
                 NP::err("insert client error");
             }
@@ -575,7 +600,7 @@ int main(int argc, const char * argv[]) {
             NP::writeWrapper(newsockfd, welcomeMsg, strlen(welcomeMsg));
             
             // broadcast incoming user
-            NP::ptrShmClientData->broadcastRawMsg(NP::iAm->id, "*** User '(no name)' entered from " + NP::iAm->strIp + ". ***\n");
+            NP::ptrShmClientData->broadcastRawMsg(NP::iAm->id, "*** User '(no name)' entered from " + NP::iAm->getIpRepresentation() + ". ***\n");
             
             do {
 #ifdef DEBUG
@@ -625,7 +650,7 @@ bool NP::processRequest(int sockfd) {
     int counter = 0;
     
     // due to TCP segment(1448 bytes), may cause read line error
-    // we need to manually judge if the input line is completed
+    // we need to manually check if the input line is completed
     bool isSameLine = false;
     
     // for `batch`
@@ -754,6 +779,21 @@ bool NP::processRequest(int sockfd) {
             isBatch = true;
             
             continue;
+
+        } else if (strLine.find("who") == 0) {  // who
+            
+            string whoMsg = NP::ptrShmClientData->who(NP::iAm->id);
+            NP::writeWrapper(sockfd, whoMsg.c_str(), whoMsg.length());
+
+            needExecute = false;
+            break;
+            
+        } else if (strLine.find("debug") == 0) {  // debug
+            
+            NP::debug(sockfd);
+            
+            needExecute = false;
+            break;
         }
         
         // exit
@@ -1158,12 +1198,12 @@ void NP::ClientHandler::signalClient(int clientId) {
     }
 }
 
-NP::Client* NP::ClientHandler::insertClient(int pid, int sockfd, string ip, string port) {
+NP::Client* NP::ClientHandler::insertClient(int pid, int sockfd, char ip[INET_ADDRSTRLEN], int port) {
     
     // get an id for new client
     int newId = -1;
     for (int i = 1; i <= MAX_USER; i++) {
-        if (clients[i].id == 0) {
+        if (!isUserIdValid(i)) {
             newId = i;
             break;
         }
@@ -1196,7 +1236,7 @@ void NP::ClientHandler::removeClient(int id) {
 
 bool NP::ClientHandler::sendRawMsgToClient(int senderId, int receiverId, string msg) {
 #ifdef DEBUG
-    NP::log("sendMsgToClient: (" + to_string(senderId) + " -> " + to_string(receiverId) + "): `" + msg + "`");
+    NP::log("sendMsgToClient: (" + to_string(senderId) + " -> " + to_string(receiverId) + "):\n" + msg);
 #endif
 
     // check sender & recervier id validity
@@ -1218,15 +1258,15 @@ bool NP::ClientHandler::sendRawMsgToClient(int senderId, int receiverId, string 
 
 void NP::ClientHandler::broadcastRawMsg(int senderId, string msg) {
 #ifdef DEBUG
-    NP::log("broadcastRawMsg from " + to_string(senderId) + ": `" + msg + "`");
+    NP::log("broadcastRawMsg from " + to_string(senderId) + ":\n" + msg);
 #endif
     
     for (int i = 1; i <= MAX_USER; i++) {
         
         if (!isUserIdValid(i)) {
-            // no longer valid id
-            // => id behind must also be invalid
-            return;
+            // there may be invalid id between users,
+            // so we cannot simply break if id is invalid
+            continue;
         }
         
         if (!sendRawMsgToClient(senderId, i, msg)) {
@@ -1237,7 +1277,7 @@ void NP::ClientHandler::broadcastRawMsg(int senderId, string msg) {
 
 bool NP::ClientHandler::tell(int senderId, int receiverId, string msg) {
 #ifdef DEBUG
-    NP::log("telling: (" + to_string(senderId) + " -> " + to_string(receiverId) + "): `" + msg + "`");
+    NP::log("telling: (" + to_string(senderId) + " -> " + to_string(receiverId) + "):\n" + msg);
 #endif
     
     msg = "*** " + clients[senderId].strUserName + " told you ***: " + msg;
@@ -1247,10 +1287,48 @@ bool NP::ClientHandler::tell(int senderId, int receiverId, string msg) {
 
 void NP::ClientHandler::yell(int senderId, string msg) {
 #ifdef DEBUG
-    NP::log("yelling from " + to_string(senderId) + ": `" + msg + "`");
+    NP::log("yelling from " + to_string(senderId) + ":\n" + msg);
 #endif
     
     msg = "*** " + clients[senderId].strUserName + " yelled ***: " + msg;
     
     broadcastRawMsg(senderId, msg);
+}
+
+string NP::ClientHandler::who(int callerId) {
+    
+    string msg = "<ID>\t<nickname>\t<IP/port>\t<indicate me>\n";
+    for (int i = 1; i <= MAX_USER; i++) {
+        // there may be invalid id between users,
+        // so we cannot simply break if id is invalid
+        if (!isUserIdValid(i)) {
+            continue;
+        }
+        
+        NP::log("who -> this is " + clients[i].print());
+        
+        msg += to_string(i) + "\t" + clients[i].strUserName + "\t" + clients[i].getIpRepresentation() + "\t";
+        
+        if (i == callerId) {
+            
+            msg += "<-me\n";
+            
+        } else {
+            
+            msg += "\n";
+        }
+    }
+    
+    return msg;
+}
+
+void NP::debug(int sockfd) {
+    
+    // show all clients info
+    string c = "";
+    for (int i = 0; i <= MAX_USER; i++) {
+        c += NP::ptrShmClientData->clients[i].print() + "\n";
+    }
+    NP::writeWrapper(sockfd, c.c_str(), c.length());
+
 }
