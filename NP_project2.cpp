@@ -829,26 +829,23 @@ bool NP::processRequest(int sockfd) {
             
         } else if (strLine.find("tell") == 0) {  // tell
             
-//            string msg = strLine.substr(5);
-//            *remove(msg.begin(), msg.end(), '\n') = '\0';
-//            *remove(msg.begin(), msg.end(), '\r') = '\0'; // trim '\r'
-//            
-//            if (NP::ptrShmClientData->name(NP::iAm->id, msg)) {
-//                
-//                // name successfully
-//                string ret = "*** User from " + NP::iAm->getIpRepresentation() + " is named '" + msg +"'. ***\n";
-//                NP::ptrShmClientData->broadcastRawMsg(NP::iAm->id, ret);
-//                
-//            } else {
-//                
-//                // failed to name
-//                string ret = "*** User '" + msg + "' already exists. ***\n";
-//                NP::writeWrapper(sockfd, ret.c_str(), ret.length());
-//            }
-//            
-//            needExecute = false;
-//            // @WARNING: should change to continue; to allow pipe?
-//            break;
+            char* cmd = new char[strLine.length()-5+1];
+            strcpy(cmd, strLine.substr(5).c_str());
+            char* chId = strtok(cmd, " ");
+            int id = atoi(chId);
+            char* msg = strtok(NULL, "\n\r");
+            
+            if (!NP::ptrShmClientData->tell(NP::iAm->id, id, msg)) {
+                // @TODO: tell undergoing
+                string msg = "*** Error: user #" + to_string(id) + " does not exist yet. ***\n";
+                NP::writeWrapper(sockfd, msg.c_str(), msg.length());
+            }
+            
+            needExecute = false;
+            delete[] cmd;
+            
+            // @WARNING: should change to continue; to allow pipe?
+            break;
             
         } else if (strLine.find("debug") == 0) {  // debug
             
