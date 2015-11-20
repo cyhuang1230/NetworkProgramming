@@ -860,6 +860,8 @@ bool NP::processRequest(int sockfd) {
 #ifdef DEBUG
             NP::log("exit found!");
 #endif
+            NP::ptrShmClientData->broadcastRawMsg(NP::iAm->id, "*** User '" + NP::iAm->getName() + "' left. ***\n");
+            
             needExit = true;
             break;
         }
