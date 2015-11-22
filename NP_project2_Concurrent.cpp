@@ -40,8 +40,6 @@
  *      - Implement a generic function to send msg to all or a specific user.
  */
 
-// @TODO: mkfifo: where to put?
-// @TODO: `>N` `<N`
 // @TODO: Need public pipe translator to prevent pipe_id > 100
 
 #include <stdio.h>
@@ -66,7 +64,7 @@
 #include <sys/shm.h>
 #include <sys/stat.h>
 #include <fcntl.h>
-
+#include <netinet/tcp.h>
 using namespace std;
 
 #define MAX_SIZE 15001
@@ -267,7 +265,7 @@ namespace NP {
         }
         
         static char* whereis(const char* cmd) {
-            
+
             const char* kPath = getenv("PATH");
 
             // to get SAME path, we need to make a copy of this.
@@ -284,7 +282,7 @@ namespace NP {
                 strcat(file, "/");
                 strcat(file, cmd);
                 *remove(file, file+len, '\r') = '\0';
-     
+
                 if (access(file, X_OK) == 0) {
 
                     delete[] path;
@@ -297,7 +295,6 @@ namespace NP {
             }
             
             delete[] path;
-            NP::log("whereis: " + string(cmd) + " -> not found");
             
             return NULL;
         }
@@ -660,7 +657,6 @@ int main(int argc, const char * argv[]) {
             if (NP::iAm == NULL) {
                 NP::err("insert client error");
             }
-            cout << "client " << NP::iAm->id << ", fdOpenForPipe = " << &NP::iAm->fdOpenForPipe << ", fdOpenForPipe[67] = " << NP::iAm->fdOpenForPipe[67] << endl;
 
             // Welcome msg
             char welcomeMsg[] =
@@ -671,7 +667,7 @@ int main(int argc, const char * argv[]) {
             
             // broadcast incoming user
             NP::ptrShmClientData->broadcastRawMsg(NP::iAm->id, "*** User '(no name)' entered from " + NP::iAm->getIpRepresentation() + ". ***\n");
-            
+
             do {
 #ifdef DEBUG
                 NP::log("Waiting for new cmd input");
@@ -860,7 +856,11 @@ bool NP::processRequest(int sockfd) {
             
         } else if (strLine.find("name") == 0) {  // name
             
-            string newName = strLine.substr(5, strLine.find('\r')-5);
+            string newName = strLine.substr(5);
+            char* charName = new char[newName.length()+1];
+            strcpy(charName, newName.c_str());
+            charName = strtok(charName, "\n\r");
+            newName = string(charName);
 
             if (NP::ptrShmClientData->name(NP::iAm->id, newName)) {
             
@@ -875,6 +875,7 @@ bool NP::processRequest(int sockfd) {
                 NP::writeWrapper(sockfd, ret.c_str(), ret.length());
             }
             
+            delete [] charName;
             needExecute = false;
             // @WARNING: should change to continue; to allow pipe?
             break;
@@ -981,7 +982,7 @@ bool NP::processRequest(int sockfd) {
                 
             } else if (curStr[0] == '>') {
                 
-                if (curStr[1] == ' ') { // to file
+                if (curStr.length() == 1) { // to file
                     
                     string filename;
                     ss >> filename;
@@ -1371,10 +1372,11 @@ void NP::signal_handler(int signum) {
             // on receiving SIGUSR1,
             // check child's own shm to get message
 #ifdef DEBUG
-            NP::log("SIGUSR1 received.");
+            NP::log("SIGUSR1 received. msg: with len = " + to_string(strlen(iAm->msg)));
+            NP::log_ch(iAm->msg);
 #endif
             // write
-            NP::writeWrapper(iAm->sockfd, &NP::ptrShmMsgBuf[iAm->id], 1024);
+            NP::writeWrapper(iAm->sockfd, iAm->msg, strlen(iAm->msg));
             
             break;
             
@@ -1466,7 +1468,7 @@ void NP::ClientHandler::removeClient(int id) {
 
 bool NP::ClientHandler::sendRawMsgToClient(int senderId, int receiverId, string msg) {
 #ifdef DEBUG
-    NP::log("sendMsgToClient: (" + to_string(senderId) + " -> " + to_string(receiverId) + "):\n" + msg);
+    NP::log("sendMsgToClient: (" + to_string(senderId) + " -> " + to_string(receiverId) + ", size = " + to_string(msg.length()) + "):\n" + msg);
 #endif
 
     // check sender & recervier id validity
@@ -1478,9 +1480,8 @@ bool NP::ClientHandler::sendRawMsgToClient(int senderId, int receiverId, string 
     memset(clients[receiverId].msg, 0, USER_MSG_BUFFER);
     
     // put msg in shm
-    size_t len = msg.length() > 1024 ? 1024 : msg.length();
-    strncpy(clients[receiverId].msg, msg.c_str(), len);
-    clients[receiverId].msg[len] = '\0';
+    msg = msg.substr(0, 1024);
+    strncpy(clients[receiverId].msg, msg.c_str(), msg.length());
     
     // signal receiver
     signalClient(receiverId, SIGUSR1);
