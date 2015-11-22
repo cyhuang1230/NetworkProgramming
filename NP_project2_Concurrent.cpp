@@ -33,6 +33,7 @@
  *      - There's no way server can be closed properly, so, in order not to leave any shm unrelaesed,
  *        we won't `shmget` until the first client is connected, and free shm when all clients are disconnected.
  *        => To keep track of the number of children, `sa_handler` needs to be implemented.
+ *        => However, MUST reset `sa_handler` in the child process so that wont mistakenly detach shm later in `exec`.
  *      - Use signal `SIGUSR1` to let others know when to write msg.
  *      - Semaphore on public pipes to prevent concurrent issue.    // not implemented :(
  *      - Use `FIFO`, a.k.a `Named pipe`, to implement public pipe. [No need to store in shm].
@@ -382,7 +383,7 @@ namespace NP {
         char*  msg;
         // if a fd opened for pipe, store that fd here
         // so that as soon as the pipe is cleared, we close fd
-        int fdOpenForPipe[PIPE_SIZE+1] = {};
+        int fdOpenForPipe[MAX_PUBLIC_PIPE] = {};
         
         Client() {}
         
@@ -399,7 +400,9 @@ namespace NP {
         }
         
         string getIpRepresentation() {
-            return string(ip) + "/" + to_string(port);
+            // as TA required
+            return "CGILAB/511";
+//            return string(ip) + "/" + to_string(port);
         }
         
         void markAsInvalid() {
@@ -491,13 +494,38 @@ namespace NP {
          */
         bool name(int senderId, string newName);
         
+        /**
+         *	Return a flag indicating whether a pipe is used
+         *
+         *	@return true if used; false, otherwise
+         */
         bool isPipeUsed(int pipeNum);
         
-        void writeToPublicPipe(int id, string msg);
+        /**
+         *	Write msg to public pipe #interalId
+         *
+         *	@param interalId	input id should be translated to interal id before using
+         *	@param msg			msg to write
+         */
+        void writeToPublicPipe(int interalId, string msg);
         
-        string readFromPublicPipe(int id);
+        /**
+         *	Read msg from public pipe #interId
+         *
+         *	@param interalId	input id should be translated to interal id before using
+         *
+         *	@return msg in that public pipe
+         */
+        string readFromPublicPipe(int interalId);
 
-        
+        /**
+         *	Public pipe id to interal id translator
+         *
+         *	@param id	input id
+         *
+         *	@return interal id, ranging from 1 to 100 (inclusive)
+         */
+        int publicPipeIdToInteralId(int id);
     };
     
 }
@@ -621,12 +649,19 @@ int main(int argc, const char * argv[]) {
             
             close(sockfd);
 
+            // reset sigaction
+            struct sigaction sigchld_action;
+            sigchld_action.sa_handler = SIG_DFL;
+            sigchld_action.sa_flags = SA_NOCLDWAIT;
+            sigaction(SIGCHLD, &sigchld_action, NULL);
+            
             // insert new client
             NP::iAm = NP::ptrShmClientData->insertClient(getpid(), newsockfd, client_addr_str, client_port);
             if (NP::iAm == NULL) {
                 NP::err("insert client error");
             }
-            
+            cout << "client " << NP::iAm->id << ", fdOpenForPipe = " << &NP::iAm->fdOpenForPipe << ", fdOpenForPipe[67] = " << NP::iAm->fdOpenForPipe[67] << endl;
+
             // Welcome msg
             char welcomeMsg[] =
             "****************************************\n"
@@ -902,10 +937,13 @@ bool NP::processRequest(int sockfd) {
         
         string curStr;
         stringstream ss = stringstream(strLine);
+        char* charLine = new char[strLine.length()-1];
+        strcpy(charLine, strLine.c_str());
+        charLine = strtok(charLine, "\n\r");
+        
         while (ss >> curStr) {
             
             const char* curStr_cstr = curStr.c_str();
-            
 #ifdef DEBUG
             NP::log(curStr);
 #endif
@@ -954,12 +992,15 @@ bool NP::processRequest(int sockfd) {
                 } else {    // to public pipe
                     
                     int toPipe = stoi(curStr.substr(1));
+                    int toPipeInteral = NP::ptrShmClientData->publicPipeIdToInteralId(toPipe);
 #ifdef DEBUG
-                    NP::log(" pipe result to public pipe #" + to_string(toPipe));
+                    NP::log("pipe result to public pipe #" + to_string(toPipe) + ", interal = " + to_string(toPipeInteral));
 #endif
                     // check pipe availability
-                    if (NP::ptrShmClientData->isPipeUsed(toPipe)) {
-                    
+                    if (NP::ptrShmClientData->isPipeUsed(toPipeInteral)) {
+#ifdef DEBUG
+                        NP::log("public pipe with internal id #" + to_string(toPipeInteral) + " is used");
+#endif
                         string msg = "*** Error: the pipe #" + to_string(toPipe) + " already exists. ***\n";
                         NP::writeWrapper(NP::iAm->sockfd, msg.c_str(), msg.length());
                         existPipeError = true;
@@ -970,7 +1011,11 @@ bool NP::processRequest(int sockfd) {
 
                     } else {
 
-                        curCl.back().stdoutToRow = -3 - toPipe;
+                        curCl.back().stdoutToRow = -3 - toPipeInteral;
+
+                        NP::ptrShmClientData
+                        ->broadcastRawMsg(NP::iAm->id,
+                                          "*** " + NP::iAm->getName() + " (#" + to_string(NP::iAm->id) + ") just piped '" + string(charLine) + "' ***\n");
                     }
                     
                     hasReadPublicPipeSymbol = true;
@@ -979,10 +1024,13 @@ bool NP::processRequest(int sockfd) {
             } else if (curStr[0] == '<') {  // read from public pipe
                 
                 int toPipe = stoi(curStr.substr(1));
+                int toPipeInteral = NP::ptrShmClientData->publicPipeIdToInteralId(toPipe);
                 
                 // check pipe has content or not
-                if (!NP::ptrShmClientData->isPipeUsed(toPipe)) {
-                    
+                if (!NP::ptrShmClientData->isPipeUsed(toPipeInteral)) {
+#ifdef DEBUG
+                    NP::log("public pipe with internal id #" + to_string(toPipeInteral) + " is not used");
+#endif
                     string msg = "*** Error: the pipe #" + to_string(toPipe) + " does not exist yet. ***\n";
                     NP::writeWrapper(NP::iAm->sockfd, msg.c_str(), msg.length());
                     existPipeError = true;
@@ -990,11 +1038,16 @@ bool NP::processRequest(int sockfd) {
                     if (hasReadPublicPipeSymbol) {
                         break;  // we read public pipe before, no need to read next cmd
                     }
+                } else {
+
+                    curCl.back().stdinFromPipe = toPipeInteral;
+                    
+                    NP::ptrShmClientData
+                    ->broadcastRawMsg(NP::iAm->id,
+                                      "*** " + NP::iAm->getName() + " (#" + to_string(NP::iAm->id) + ") just received via '" + string(charLine) + "' ***\n");
                 }
                 
                 hasReadPublicPipeSymbol = true;
-                
-                curCl.back().stdinFromPipe = toPipe;
                 
             } else if (existPipeError) {
               
@@ -1032,6 +1085,7 @@ bool NP::processRequest(int sockfd) {
         
             }
         }
+        delete [] charLine;
         
 #ifdef DEBUG
         NP::log("--------- End of parsing. ---------");
@@ -1117,7 +1171,7 @@ void NP::processCommand(const int no, vector<Command>& line, list<pair<pair<int,
                 NP::dup2(input[0], STDIN_FILENO, false);
                 close(input[1], -1, stderrOutput[1], "", "", false);
                 close(input[0], -1, stderrOutput[0], "", "", false);
-                
+
                 // exec
                 char* file = NP::Command::whereis(line[curCmd].arg[0].c_str());
                 if(execvp(file, line[curCmd].toArgArray()) == -1) {
@@ -1132,22 +1186,32 @@ void NP::processCommand(const int no, vector<Command>& line, list<pair<pair<int,
             default:    // parent
                 
                 // if list has input to child, write it now
-                list<pair<pair<int, int>, string>>::iterator itStdout = NP::findTemp(listOutput, make_pair(no, curCmd));
-                
-                // found output
-                if (itStdout != listOutput.end()) {
-                    NP::writeWrapper(input[1], (itStdout->second).c_str(), (itStdout->second).length());
-#ifdef DEBUG
-                    NP::log("[parent] found output for (" + to_string(no) + "," + to_string(curCmd) + "): (via fd " + to_string(input[1]) + ")\n" + itStdout->second);
-#endif
-                    listOutput.remove(*itStdout);
+                if (line[curCmd].stdinFromPipe != -1) { // if input is from public pipe
                     
-                } else {
+                    string msg = NP::ptrShmClientData->readFromPublicPipe(line[curCmd].stdinFromPipe);
+                    NP::writeWrapper(input[1], msg.c_str(), msg.length());
 #ifdef DEBUG
-                    NP::log("[parent] nothing found for (" + to_string(no) + "," + to_string(curCmd) + ")");
+                    NP::log("[parent] public pipe #" + to_string(line[curCmd].stdinFromPipe) + " for (" + to_string(no) + "," + to_string(curCmd) + "): (via fd " + to_string(input[1]) + ")\n" + msg);
 #endif
+
+                } else {    // if input from list
+                    
+                    list<pair<pair<int, int>, string>>::iterator itStdout = NP::findTemp(listOutput, make_pair(no, curCmd));
+                    
+                    // found output
+                    if (itStdout != listOutput.end()) {
+                        NP::writeWrapper(input[1], (itStdout->second).c_str(), (itStdout->second).length());
+#ifdef DEBUG
+                        NP::log("[parent] found output for (" + to_string(no) + "," + to_string(curCmd) + "): (via fd " + to_string(input[1]) + ")\n" + itStdout->second);
+#endif
+                        listOutput.remove(*itStdout);
+                        
+                    } else {
+#ifdef DEBUG
+                        NP::log("[parent] nothing found for (" + to_string(no) + "," + to_string(curCmd) + ")");
+#endif
+                    }
                 }
-                
                 
                 // close write end of 3 pipes
                 string closeMsg = "[parent] close write pipe(" + to_string(no) + "," + to_string(curCmd) + ") ";
@@ -1185,6 +1249,9 @@ void NP::processCommand(const int no, vector<Command>& line, list<pair<pair<int,
                     NP::log("[parent] child(" + to_string(no) + "," + to_string(curCmd) + ") has stdout to row " + to_string(no) + " + " + to_string(line[curCmd].stdoutToRow) + ":\n" + strChildStdoutOutput);
 #endif
                     switch (line[curCmd].stdoutToRow) {
+                        case -3-MAX_PUBLIC_PIPE ... -4:   // to public pipe (-3 shouldnt happen)
+                            NP::ptrShmClientData->writeToPublicPipe(-3-line[curCmd].stdoutToRow, strChildStdoutOutput);
+                            break;
                             
                         case -2:    // to file
                         {
@@ -1236,6 +1303,9 @@ void NP::processCommand(const int no, vector<Command>& line, list<pair<pair<int,
                     NP::log("[parent] child(" + to_string(no) + "," + to_string(curCmd) + ") has stderr to row " + to_string((no)) + " + " + to_string(line[curCmd].stderrToRow) + ":\n" + strChildStderrOutput);
 #endif
                     switch (line[curCmd].stderrToRow) {
+                        case -3-MAX_PUBLIC_PIPE ... -4:   // to public pipe (-3 shouldnt happen)
+                            NP::ptrShmClientData->writeToPublicPipe(-3-line[curCmd].stdoutToRow, strChildStdoutOutput);
+                            break;
                             
                         case -1:    // to sockfd
                             NP::writeWrapper(line[curCmd].sockfd, strChildStderrOutput.c_str(), strChildStderrOutput.length());
@@ -1317,8 +1387,6 @@ void NP::signal_handler(int signum) {
                     ::close(fd);
                 }
             }
-            
-            // @TODO: pipe msg
     }
 }
 
@@ -1375,6 +1443,7 @@ NP::Client* NP::ClientHandler::insertClient(int pid, int sockfd, char ip[INET_AD
     }
     
     clients[newId].set(newId, pid, sockfd, ip, port);
+    memset(clients[newId].fdOpenForPipe, 0, sizeof(clients[newId].fdOpenForPipe));
     
 #ifdef DEBUG
     NP::log("inserted client with id = " + to_string(clients[newId].id));
@@ -1506,15 +1575,14 @@ bool NP::ClientHandler::isPipeUsed(int pipeNum) {
     return pipeInUseFlag[pipeNum];
 }
 
-void NP::ClientHandler::writeToPublicPipe(int id, string msg) {
+void NP::ClientHandler::writeToPublicPipe(int interalId, string msg) {
 #ifdef DEBUG
-    NP::log("writeToPublicPipe: #" + to_string(id) + ":\n" + msg);
+    NP::log("writeToPublicPipe: #" + to_string(interalId) + ":\n" + msg);
 #endif
 
-    int interalId = id;
     char* name = new char[20];
-    strncpy(name, "NP_PIPE_", 8);
-    name[8] = (char)id;
+    strncpy(name, "/tmp/NP_PIPE_", 13);
+    name[8] = (char)interalId;
     name[9] = '\0';
     
     // check if fifo already exists
@@ -1538,7 +1606,7 @@ void NP::ClientHandler::writeToPublicPipe(int id, string msg) {
     NP::writeWrapper(fd, msg.c_str(), len);
     
     NP::iAm->fdOpenForPipe[interalId] = fd;
-    pipeInUseFlag[interalId] = true;
+    NP::ptrShmClientData->pipeInUseFlag[interalId] = true;
     NP::ptrShmClientData->curPublicPipe = interalId;
     NP::ptrShmClientData->isJustReadPublicPipe = false;
     NP::ptrShmClientData->signalEveryClient(SIGUSR2);
@@ -1547,15 +1615,14 @@ void NP::ClientHandler::writeToPublicPipe(int id, string msg) {
     delete [] name;
 }
 
-string NP::ClientHandler::readFromPublicPipe(int id) {
+string NP::ClientHandler::readFromPublicPipe(int interalId) {
 #ifdef DEBUG
-    NP::log("readFromPublicPipe: #" + to_string(id));
+    NP::log("readFromPublicPipe: #" + to_string(interalId));
 #endif
     
-    int interalId = id;
     char* name = new char[20];
-    strncpy(name, "NP_PIPE_", 8);
-    name[8] = (char)id;
+    strncpy(name, "/tmp/NP_PIPE_", 13);
+    name[8] = (char)interalId;
     name[9] = '\0';
     
     int fd = open(name, O_RDWR);
@@ -1584,6 +1651,11 @@ string NP::ClientHandler::readFromPublicPipe(int id) {
     return ret;
 }
 
+// @TODO
+int NP::ClientHandler::publicPipeIdToInteralId(int id) {
+    // shoud range from 1~100
+    return id + 'A';
+}
 
 void printAllPublicPipe() {
 
