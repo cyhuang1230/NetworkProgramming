@@ -1374,7 +1374,7 @@ void NP::signal_handler(int signum) {
             NP::log("SIGUSR1 received.");
 #endif
             // write
-            NP::writeWrapper(iAm->sockfd, &NP::ptrShmMsgBuf[1], 1024);
+            NP::writeWrapper(iAm->sockfd, &NP::ptrShmMsgBuf[iAm->id], 1024);
             
             break;
             
