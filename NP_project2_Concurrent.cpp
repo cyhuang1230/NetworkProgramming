@@ -1549,9 +1549,9 @@ string NP::ClientHandler::who(int callerId) {
         if (!isUserIdValid(i)) {
             continue;
         }
-        
+#ifdef DEBUG
         NP::log("who -> this is " + clients[i].print());
-        
+#endif
         msg += to_string(i) + "\t" + clients[i].getName() + "\t" + clients[i].getIpRepresentation() + "\t";
         
         if (i == callerId) {
@@ -1614,7 +1614,9 @@ void NP::ClientHandler::writeToPublicPipe(int interalId, string msg) {
     }
 
     int len = msg.length() >= 1024 ? 1024 : msg.length();
+#ifdef DEBUG
     NP::log("Going to write to public pipe #" + to_string(interalId) + "(" + string(name) + ") with fd " + to_string(fd));
+#endif
     // Need to clear pipe content?
     NP::writeWrapper(fd, msg.c_str(), len);
     
