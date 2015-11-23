@@ -290,7 +290,7 @@ namespace NP {
 	class CommandLine {
 	public:
 		vector<vector<Command>> cmds;	// not suppose to change the order (i.e. append only) to prevent error
-        int inputLinesLeft = 1; // the number of lines to input
+//        int inputLinesLeft = 1; // the number of lines to input
     };
     
     /* For HW2 */
@@ -306,7 +306,11 @@ namespace NP {
         int port;
         char  msg[USER_MSG_BUFFER];
         string PATH = "bin:.";
-        
+        // for input commands
+        list<pair<pair<int, int>, string>> listOutput;    // store output temporarily
+        int inputLinesLeft = 0;
+        int lineCounter = 0;
+
         Client() {}
         
         void set(int iId, int iPid, int iSockfd, char cIp[INET_ADDRSTRLEN], int iPort) {
@@ -619,13 +623,16 @@ int main(int argc, const char * argv[]) {
  */
 bool NP::processRequest(int sockfd) {
     
+    if (NP::iAm->inputLinesLeft == 0) { // first time
+        NP::iAm->listOutput = list<pair<pair<int, int>, string>>();
+        NP::iAm->lineCounter = 0;
+    }
+    
     // create a cmd line for this input
     NP::CommandLine cl = CommandLine();
     string strLine;
     bool needExit = false;
     bool needExecute = true;
-    list<pair<pair<int, int>, string>> listOutput;    // store output temporarily
-    int counter = 0;
     bool isFirstInput = true;
     char charLine[10000];
     
@@ -638,9 +645,9 @@ bool NP::processRequest(int sockfd) {
     ifstream file;
     
 	// read cmd
-	while (isSameLine || cl.inputLinesLeft--) {
+	do {
 #ifdef DEBUG
-        NP::log("cl.inputLinesLeft = " + to_string(cl.inputLinesLeft));
+        NP::log("NP::iAm->inputLinesLeft = " + to_string(NP::iAm->inputLinesLeft));
 #endif
         if (isBatch) {
             
@@ -735,7 +742,7 @@ bool NP::processRequest(int sockfd) {
             string name = strLine.substr(6);
             *remove(name.begin(), name.end(), '\n') = '\0'; // trim '\n'
             *remove(name.begin(), name.end(), '\r') = '\0'; // trim '\r'
-            cl.inputLinesLeft++;
+            NP::iAm->inputLinesLeft++;
 
 #ifdef DEBUG
             NP::log("batch with file: `" + name + "`");
@@ -864,8 +871,8 @@ bool NP::processRequest(int sockfd) {
                     
                     int extraLine = atoi(curStr.substr(1).c_str());
                     curCl.back().stdoutToRow = extraLine;
-                    if (cl.inputLinesLeft < extraLine) {
-                        cl.inputLinesLeft = extraLine;
+                    if (NP::iAm->inputLinesLeft < extraLine) {
+                        NP::iAm->inputLinesLeft = extraLine;
                     }
                 }
                 
@@ -876,8 +883,8 @@ bool NP::processRequest(int sockfd) {
                 int extraLine = atoi(curStr.substr(1).c_str());
                 curCl.back().stderrToRow = extraLine;
                 
-                if (cl.inputLinesLeft < extraLine) {
-                    cl.inputLinesLeft = extraLine;
+                if (NP::iAm->inputLinesLeft < extraLine) {
+                    NP::iAm->inputLinesLeft = extraLine;
                 }
                 
             } else if (curStr[0] == '>') {
@@ -997,13 +1004,14 @@ bool NP::processRequest(int sockfd) {
 #endif
             // if curCl is empty -> the first cmd is invalid
             // -> dont process this row
-            cl.inputLinesLeft++;
+            NP::iAm->inputLinesLeft++;
             continue;
         }
         
         // process this line
-        NP::processCommand(counter++, curCl, listOutput);
-    }
+        NP::processCommand(NP::iAm->lineCounter++, curCl, NP::iAm->listOutput);
+    
+    } while (isSameLine);
 
     if (needExit) {
 #ifdef DEBUG
