@@ -85,21 +85,7 @@ namespace NP {
     class Command;
     class CommandLine;
     
-	void log(string str, bool error = false, bool newline = true, bool prefix = true) {
-		
-		if (error && prefix) {
-			cout << "[" << getpid() << "] ERROR: ";
-		} else if (prefix) {
-			cout << "[" << getpid() << "] LOG: ";
-		}
-		
-		cout << str;
-        if (newline) {
-            cout << endl;
-        }
-        
-		cout.flush();
-	}
+    void log(string str, bool error = false, bool newline = true, bool prefix = true);
     
     void log_ch(char* ch, bool error = false, bool newline = true, bool prefix = true) {
         
@@ -641,6 +627,7 @@ bool NP::processRequest(int sockfd) {
     list<pair<pair<int, int>, string>> listOutput;    // store output temporarily
     int counter = 0;
     bool isFirstInput = true;
+    char charLine[10000];
     
     // due to TCP segment(1448 bytes), may cause read line error
     // we need to manually check if the input line is completed
@@ -850,9 +837,10 @@ bool NP::processRequest(int sockfd) {
         
         string curStr;
         stringstream ss = stringstream(strLine);
-        char* charLine = new char[strLine.length()+1];
+        memset(charLine, 0, sizeof(charLine));
         strcpy(charLine, strLine.c_str());
-        charLine = strtok(charLine, "\n\r");
+        char* afterLine = strtok(charLine, "\n\r");
+        strcpy(charLine, afterLine);
         
         while (ss >> curStr) {
             
@@ -996,7 +984,6 @@ bool NP::processRequest(int sockfd) {
         
             }
         }
-//        delete [] charLine;
         
 #ifdef DEBUG
         NP::log("--------- End of parsing. ---------");
@@ -1286,6 +1273,22 @@ char* NP::Command::whereis(const char* cmd) {
     return NULL;
 }
 
+void NP::log(string str, bool error, bool newline, bool prefix) {
+    
+    if (error && prefix) {
+        cout << "[" << getpid() << ", " + to_string(NP::iAm == NULL ? -1 : NP::iAm->id) + "] ERROR: ";
+    } else if (prefix) {
+        cout << "[" << getpid() << ", " + to_string(NP::iAm == NULL ? -1 : NP::iAm->id) + "] LOG: ";
+    }
+    
+    cout << str;
+    if (newline) {
+        cout << endl;
+    }
+    
+    cout.flush();
+}
+
 /* For HW2 */
 
 /// NP::ClientHandler
@@ -1394,9 +1397,9 @@ string NP::ClientHandler::who(int callerId) {
         if (!isUserIdValid(i)) {
             continue;
         }
-        
+#ifdef DEBUG
         NP::log("who -> this is " + clients[i].print());
-        
+#endif
         msg += to_string(i) + "\t" + clients[i].getName() + "\t" + clients[i].getIpRepresentation() + "\t";
         
         if (i == callerId) {
