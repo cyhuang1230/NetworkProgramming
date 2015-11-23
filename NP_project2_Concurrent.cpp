@@ -1,5 +1,5 @@
 //  NCTU CS. Network Programming Assignment 2
-//  : RAS with chat.
+//  : Remote Working Ground (RWG)
 //  : Ver.II - Concurrent connection-oriented paradigm with shared memory.
 //  :: Please refer to `hw2spec.txt` for more details.
 
@@ -394,6 +394,10 @@ namespace NP {
             strncpy(ip, cIp, INET_ADDRSTRLEN);
             port = iPort;
             msg = &ptrShmMsgBuf[id];
+            
+            // reset name
+            memset(userName, 0, sizeof(userName));
+            strcpy(userName, "(no name)");
         }
         
         string getIpRepresentation() {
@@ -592,7 +596,7 @@ int main(int argc, const char * argv[]) {
 	/**
 	 *  Listen
 	 */
-	listen(sockfd, 5);
+	listen(sockfd, 30);
 	
 	/**
 	 *  Accept
@@ -714,7 +718,8 @@ bool NP::processRequest(int sockfd) {
     bool needExecute = true;
     list<pair<pair<int, int>, string>> listOutput;    // store output temporarily
     int counter = 0;
-    
+    char charLine[10000];
+
     // due to TCP segment(1448 bytes), may cause read line error
     // we need to manually check if the input line is completed
     bool isSameLine = false;
@@ -938,9 +943,10 @@ bool NP::processRequest(int sockfd) {
         
         string curStr;
         stringstream ss = stringstream(strLine);
-        char* charLine = new char[strLine.length()-1];
+        memset(charLine, 0, sizeof(charLine));
         strcpy(charLine, strLine.c_str());
-        charLine = strtok(charLine, "\n\r");
+        char* afterLine = strtok(charLine, "\n\r");
+        strcpy(charLine, afterLine);
         
         while (ss >> curStr) {
             
@@ -1086,7 +1092,7 @@ bool NP::processRequest(int sockfd) {
         
             }
         }
-        delete [] charLine;
+//        delete [] charLine;
         
 #ifdef DEBUG
         NP::log("--------- End of parsing. ---------");
