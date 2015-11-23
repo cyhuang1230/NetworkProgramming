@@ -64,7 +64,7 @@
 #include <sys/shm.h>
 #include <sys/stat.h>
 #include <fcntl.h>
-#include <netinet/tcp.h>
+#include <semaphore.h>
 using namespace std;
 
 #define MAX_SIZE 15001
@@ -343,6 +343,8 @@ namespace NP {
     /* For HW2 */
     void debug(int);
     
+    const char SEM_NAME[] = "NP_PUBLIC_PIPE";
+    sem_t* sem_pp;
     class Client;
     class ClientHandler;
     
@@ -629,6 +631,10 @@ int main(int argc, const char * argv[]) {
             }
             NP::ptrShmMsgBuf = (char*) shmat(NP::shmIdMsgBuf, NULL, 0);
             memset(NP::ptrShmMsgBuf, 0, USER_MSG_BUFFER_TOTAL);
+            
+            // semaphore
+            NP::sem_pp = sem_open(NP::SEM_NAME, O_CREAT, 0777, 1);
+
         }
         
         // get client addr and port
@@ -684,6 +690,9 @@ int main(int argc, const char * argv[]) {
 #endif
             
             NP::ptrShmClientData->removeClient(NP::iAm->id);
+            
+            // close semaphore
+            sem_close(NP::sem_pp);
             
             exit(EXIT_SUCCESS);
             
@@ -1370,6 +1379,8 @@ void NP::signal_handler(int signum) {
                 shmdt(ptrShmMsgBuf);
                 markShmToBeDestroyed(shmIdClientData);
                 markShmToBeDestroyed(shmIdMsgBuf);
+                sem_close(NP::sem_pp);
+                sem_unlink(NP::SEM_NAME);
             }
             
             break;
@@ -1608,6 +1619,8 @@ void NP::ClientHandler::writeToPublicPipe(int interalId, string msg) {
         }
     }
     
+    sem_wait(NP::sem_pp);
+    
     int fd = open(name, O_RDWR);
     if (fd == -1) {
         NP::err("open fd error");
@@ -1625,6 +1638,8 @@ void NP::ClientHandler::writeToPublicPipe(int interalId, string msg) {
     NP::ptrShmClientData->curPublicPipe = interalId;
     NP::ptrShmClientData->isJustReadPublicPipe = false;
     NP::ptrShmClientData->signalEveryClient(SIGUSR2);
+    
+    sem_post(NP::sem_pp);
     
 //    ::close(fd);
     delete [] name;
