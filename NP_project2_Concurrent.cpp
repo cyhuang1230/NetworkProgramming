@@ -393,7 +393,7 @@ namespace NP {
             sockfd = iSockfd;
             strncpy(ip, cIp, INET_ADDRSTRLEN);
             port = iPort;
-            msg = &ptrShmMsgBuf[id];
+            msg = ptrShmMsgBuf + USER_MSG_BUFFER*(id-1);
             
             // reset name
             memset(userName, 0, sizeof(userName));
@@ -1473,10 +1473,11 @@ void NP::ClientHandler::removeClient(int id) {
 }
 
 bool NP::ClientHandler::sendRawMsgToClient(int senderId, int receiverId, string msg) {
-#ifdef DEBUG
-    NP::log("sendMsgToClient: (" + to_string(senderId) + " -> " + to_string(receiverId) + ", size = " + to_string(msg.length()) + "):\n" + msg);
-#endif
 
+#ifdef DEBUG
+    NP::log("sendMsgToClient: [Expected] (" + to_string(senderId) + " -> " + to_string(receiverId) + ", size = " + to_string(msg.length()) + "):\n" + msg);
+#endif
+    
     // check sender & recervier id validity
     if (!isUserIdValid(receiverId) || !isUserIdValid(senderId)) {
         return false;
@@ -1492,6 +1493,11 @@ bool NP::ClientHandler::sendRawMsgToClient(int senderId, int receiverId, string 
     // signal receiver
     signalClient(receiverId, SIGUSR1);
 
+#ifdef DEBUG
+    NP::log("sendMsgToClient: [Actually] (" + to_string(senderId) + " -> " + to_string(receiverId) + ", size = " + to_string(strlen(clients[receiverId].msg)) + "):");
+    NP::log_ch(clients[receiverId].msg);
+#endif
+    
     return true;
 }
 
