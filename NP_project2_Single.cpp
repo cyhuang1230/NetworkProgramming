@@ -322,6 +322,9 @@ namespace NP {
             sockfd = iSockfd;
             strncpy(ip, cIp, INET_ADDRSTRLEN);
             port = iPort;
+            // reset name
+            memset(userName, 0, sizeof(userName));
+            strcpy(userName, "(no name)");
         }
         
         string getIpRepresentation() {
