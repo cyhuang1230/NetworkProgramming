@@ -35,7 +35,7 @@
  *        => To keep track of the number of children, `sa_handler` needs to be implemented.
  *        => However, MUST reset `sa_handler` in the child process so that wont mistakenly detach shm later in `exec`.
  *      - Use signal `SIGUSR1` to let others know when to write msg.
- *      - Semaphore on public pipes to prevent concurrent issue.    // not implemented :(
+ *      - Semaphore on public pipes to prevent concurrent issue.
  *      - Use `FIFO`, a.k.a `Named pipe`, to implement public pipe. [No need to store in shm].
  *      - Implement a generic function to send msg to all or a specific user.
  */
