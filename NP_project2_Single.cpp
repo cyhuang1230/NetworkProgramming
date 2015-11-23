@@ -27,17 +27,16 @@
 /*  For HW2 */
 /**
  *  Main idea:
- *      - Keep track of `sockfd`s so that we can send msg to each client.
- *      - Store client data & messages in shared memory in order to let every child can read.
- *      - Create additional MAX_USER(# of user) blocks of shared memory to store direct msg (i.e. broadcst msg).
- *      - There's no way server can be closed properly, so, in order not to leave any shm unrelaesed,
- *        we won't `shmget` until the first client is connected, and free shm when all clients are disconnected.
- *        => To keep track of the number of children, `sa_handler` needs to be implemented.
- *        => However, MUST reset `sa_handler` in the child process so that wont mistakenly detach shm later in `exec`.
- *      - Use signal `SIGUSR1` to let others know when to write msg.
- *      - Semaphore on public pipes to prevent concurrent issue.    // not implemented :(
- *      - Use `FIFO`, a.k.a `Named pipe`, to implement public pipe. [No need to store in shm].
- *      - Implement a generic function to send msg to all or a specific user.
+ *      - Basically same structure as ver. II, 
+ *        but as a single process program, we dont need any shm or semaphore, which makes it much easier, yayyy!.
+ *      - Only involves one huge adjustment:
+ *        We can no longer use a while loop to get whole input from `numbered-pipe`.
+ *        If we continue to do so, program will stuck in the following input:
+ *          [Client 1] % ls |1
+ *          [Client 2] % ls |1
+ *          [Client 1] % cat
+ *          [Client 2] ________ <- program stucks, prompt wont display
+ *       => Instead, we have to check input ***line by line***, and keep track of input-related information.
  */
 
 // @TODO: Need public pipe translator to prevent pipe_id > 100
