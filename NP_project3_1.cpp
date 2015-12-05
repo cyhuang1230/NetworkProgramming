@@ -54,7 +54,11 @@ void NP::printBody() {
     
     char* token = strtok(data, "&");
     while (token != NULL && numberOfMachines < 5) {
-        cout << "DOING " << numberOfMachines << endl;
+        
+        if (strlen(token) <= 3) {
+            break;
+        }
+        
         // ip
         strncpy(ip[numberOfMachines], &token[3], 16);
         
@@ -72,7 +76,7 @@ void NP::printBody() {
     }
 
     cout << "numberOfMachines" << numberOfMachines << endl;
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < numberOfMachines; i++) {
         cout << ip[i] << ":" <<  port[i] << " @ " <<  file[i] << endl;
     }
     
