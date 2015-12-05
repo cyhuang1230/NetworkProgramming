@@ -429,7 +429,7 @@ namespace NP {
          *
          *	@return true if operation succeded; false, otherwise.
          */
-        bool name(int senderId, string newName);
+        int name(int senderId, string newName);
         
         /**
          *	Return a flag indicating whether a pipe is used
@@ -468,6 +468,7 @@ namespace NP {
     ClientHandler clientHandler;
     Client* iAm;
     string public_pipe[MAX_PUBLIC_PIPE];
+    vector<string> suicideName;
 }
 
 int main(int argc, const char * argv[]) {
@@ -599,7 +600,6 @@ int main(int argc, const char * argv[]) {
             NP::log("Selected id #" + to_string(NP::iAm->id) + ", with toCheck = " + to_string(toCheck));
 #endif
             if (NP::processRequest(NP::iAm->sockfd)) {
-                
                 // if need to exit
                 FD_CLR(NP::iAm->sockfd, &fdset);
                 close(NP::iAm->sockfd);
@@ -777,17 +777,30 @@ bool NP::processRequest(int sockfd) {
             charName = strtok(charName, "\n\r");
             newName = string(charName);
 
-            if (NP::clientHandler.name(NP::iAm->id, newName)) {
-            
-                // name successfully
-                string ret = "*** User from " + NP::iAm->getIpRepresentation() + " is named '" + newName +"'. ***\n";
-                NP::clientHandler.broadcastRawMsg(NP::iAm->id, ret);
+            switch (NP::clientHandler.name(NP::iAm->id, newName)) {
+                case true:
+                {
+                    // name successfully
+                    string ret = "*** User from " + NP::iAm->getIpRepresentation() + " is named '" + newName +"'. ***\n";
+                    NP::clientHandler.broadcastRawMsg(NP::iAm->id, ret);
+                    break;
+                }
                 
-            } else {
+                case false:
+                {
+                    // failed to name
+                    string ret = "*** User '" + newName + "' already exists. ***\n";
+                    NP::writeWrapper(sockfd, ret.c_str(), ret.length());
+                    break;
+                }
                 
-                // failed to name
-                string ret = "*** User '" + newName + "' already exists. ***\n";
-                NP::writeWrapper(sockfd, ret.c_str(), ret.length());
+                case -1:
+                {
+                    // suicided name
+                    string ret = "*** User '" + newName + "' is dead. ***\n";
+                    NP::writeWrapper(sockfd, ret.c_str(), ret.length());
+                    break;
+                }
             }
             
             delete [] charName;
@@ -823,6 +836,23 @@ bool NP::processRequest(int sockfd) {
             delete[] cmd;
             
             // @WARNING: should change to continue; to allow pipe?
+            break;
+        } else if (strLine.find("suicide") == 0) {  // suicide
+            
+            string name = NP::iAm->getName();
+            if (name == "(no name)") {  // dont suicide with default name
+                
+                string msg = "*** Error: cannot suicide with default name. ***\n";
+                NP::writeWrapper(sockfd, msg.c_str(), msg.length());
+
+                needExecute = false;
+                break;
+            }
+            
+            NP::suicideName.push_back(name);
+            NP::clientHandler.broadcastRawMsg(NP::iAm->id, "*** " + name + " is already dead. ***\n");
+            
+            needExit = true;
             break;
         }
         
@@ -940,7 +970,7 @@ bool NP::processRequest(int sockfd) {
 #ifdef DEBUG
                     NP::log("public pipe with internal id #" + to_string(toPipeInteral) + " is not used");
 #endif
-                    string msg = "*** Error: the pipe #" + to_string(toPipe) + " does not exist yet. ***\n";
+                    string msg = "*** Error: public pipe #" + to_string(toPipe) + " does not exist yet. ***\n";
                     NP::writeWrapper(NP::iAm->sockfd, msg.c_str(), msg.length());
                     existPipeError = true;
                     
@@ -1425,7 +1455,7 @@ string NP::ClientHandler::who(int callerId) {
     return msg;
 }
 
-bool NP::ClientHandler::name(int senderId, string newName) {
+int NP::ClientHandler::name(int senderId, string newName) {
 
     for (int i = 1; i <= MAX_USER; i++) {
         
@@ -1435,6 +1465,12 @@ bool NP::ClientHandler::name(int senderId, string newName) {
         
         if (strncmp(clients[i].userName, newName.c_str(), USER_NAME_SIZE) == 0) {
             return false;
+        }
+    }
+    
+    for (vector<string>::iterator it = NP::suicideName.begin(); it != NP::suicideName.end(); it++) {
+        if (*it == newName) {
+            return -1;
         }
     }
     

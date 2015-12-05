@@ -1017,7 +1017,7 @@ bool NP::processRequest(int sockfd) {
 #ifdef DEBUG
                         NP::log("public pipe with internal id #" + to_string(toPipeInteral) + " is used");
 #endif
-                        string msg = "*** Error: the pipe #" + to_string(toPipe) + " already exists. ***\n";
+                        string msg = "*** Error: public pipe #" + to_string(toPipe) + " already exists. ***\n";
                         NP::writeWrapper(NP::iAm->sockfd, msg.c_str(), msg.length());
                         existPipeError = true;
                         
@@ -1072,7 +1072,7 @@ bool NP::processRequest(int sockfd) {
             } else if (shouldCurStrBeCmd && !NP::Command::isCommandValid(curStr_cstr)) {    // invalid cmd
                 
 #ifdef DEBUG
-                NP::log(" -> invalid cmd");
+                NP::log(" -> invalid cmd with shouldCurStrBeCmd = " + to_string(shouldCurStrBeCmd));
 #endif
                 string prefix = "Unknown command: [";
                 string suffix = "].\n";
@@ -1605,7 +1605,7 @@ void NP::ClientHandler::writeToPublicPipe(int interalId, string msg) {
 #endif
 
     char* name = new char[20];
-    strncpy(name, "/tmp/NP_PIPE_", 13);
+    strncpy(name, "/tmp/NP_PIPE_c", 13);
     name[8] = (char)interalId;
     name[9] = '\0';
     
