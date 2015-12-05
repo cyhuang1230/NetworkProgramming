@@ -56,6 +56,9 @@ void NP::printBody() {
     while (token != NULL && numberOfMachines < 5) {
         
         if (strlen(token) <= 3) {
+            // first 3 letters must be sth like `h1=`,
+            // so if there's info for us to read,
+            // `token` must longer than 3 words
             break;
         }
         
