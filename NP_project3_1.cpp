@@ -2,10 +2,11 @@
 /**
  *	Main idea:
  *      - Write may fail. Write a wrapper class to handle this.
- *      - Parse query string needs to be handled carefully.
+ *      - Parsing query string needs to be handled carefully.
  */
 
 #include <iostream>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <sys/socket.h>
@@ -35,12 +36,12 @@ namespace NP {
      *  Misc
      */
     
-    void err(string domId, string msg);
+    void print(string domId, string msg, bool isError = false);
     
     
     class Client {
         char ip[INET_ADDRSTRLEN];
-        int port;
+        char port[6];
         char file[FILENAME_LENGTH];
         string domId;
         int sockfd;
@@ -48,7 +49,7 @@ namespace NP {
     public:
         Client() {}
         
-        Client(int id, const char* iIp, int iPort, const char* iFile);
+        Client(int id, const char* iIp, const char* iPort, const char* iFile);
         
         ~Client() {
             close(sockfd);
@@ -65,7 +66,7 @@ namespace NP {
         /**
          *	Execute program and constantly produce output
          */
-        void execute();
+        bool connect();
     };
 }
 
@@ -114,9 +115,8 @@ void NP::printBody() {
     
     char* data = getenv("QUERY_STRING");
     char ip[CLIENT_MAX_NUMBER][INET_ADDRSTRLEN];
-    int port[CLIENT_MAX_NUMBER];
+    char port[CLIENT_MAX_NUMBER][6];
     char file[CLIENT_MAX_NUMBER][FILENAME_LENGTH];
-    cout << data << endl;
     
     char* token = strtok(data, "&");
     while (token != NULL && numberOfMachines < 5) {
@@ -133,7 +133,7 @@ void NP::printBody() {
         
         // port
         token = strtok(NULL, "&");
-        port[numberOfMachines] = atoi(&token[3]);
+        strncpy(port[numberOfMachines], &token[3], 6);
 
         // file
         token = strtok(NULL, "&");
@@ -173,21 +173,21 @@ void NP::printBody() {
     cout << beforeTableHeader << tableHeader << tableData << afterTableData;
 }
 
-NP::Client::Client(int id, const char* iIp, int iPort, const char* iFile) {
+NP::Client::Client(int id, const char* iIp, const char* iPort, const char* iFile) {
     
     domId = "m" + to_string(id);
     strncpy(ip, iIp, INET_ADDRSTRLEN);
-    port = iPort;
+    strncpy(port, iPort, 6);
     strncpy(file, iFile, FILENAME_LENGTH);
 }
 
 void NP::executeClientPrograms() {
     for (int i = 0; i < numberOfMachines; i++) {
-        clients[i].execute();
+        clients[i].connect();
     }
 }
 
-void NP::Client::execute() {
+bool NP::Client::connect() {
     
     /**
      *	Get server info
@@ -197,10 +197,12 @@ void NP::Client::execute() {
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = AI_PASSIVE;
+    hints.ai_protocol = IPPROTO_TCP;
     
-    if ((status = getaddrinfo(ip, NULL, &hints, &res)) != 0) {
-        err(domId, "getaddrinfo: " + string(gai_strerror(status)));
-        return;
+    if ((status = getaddrinfo(ip, port, &hints, &res)) != 0) {
+        print(domId, "getaddrinfo: " + string(gai_strerror(status)));
+        return false;
     }
 
     /**
@@ -209,10 +211,10 @@ void NP::Client::execute() {
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (sockfd == -1) {
         
-        err(domId, "Socket error: " + string(strerror(errno)));
-        return;
-        
+        print(domId, "Socket error: " + string(strerror(errno)));
+        return false;
     }
+    // set to nonblocking
     int flags = fcntl(sockfd, F_GETFL, 0);
     fcntl(sockfd, F_SETFL, flags | O_NONBLOCK);
     this->sockfd = sockfd;
@@ -220,15 +222,22 @@ void NP::Client::execute() {
     /**
      *	Connect
      */
-    if (connect(sockfd, res->ai_addr, res->ai_addrlen) == -1) {
-        err(domId, "Connect error: " + string(strerror(errno)));
+    if (::connect(sockfd, res->ai_addr, res->ai_addrlen) == -1) {
+        print(domId, "Connect error: " + string(strerror(errno)));
     }
     
-    
     freeaddrinfo(res);
+    return true;
 }
 
 /// MISC
-void NP::err(string domId, string msg) {
-    cout << "<script>document.all['" + domId + "'].innerHTML += \"ERROR:" + msg + "\";</script>";
+void NP::print(string domId, string msg, bool isError) {
+    
+    cout << "<script>document.all['" + domId + "'].innerHTML += \"";
+    
+    if (isError) {
+        cout << "ERROR:";
+    }
+    
+    cout << msg + "\";</script>";
 }
