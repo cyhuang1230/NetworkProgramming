@@ -7,6 +7,12 @@
  *      - Try using `flag`(bitwise comparison) instead of individually specifying each property in `log` function.
  *      - Output recerived from servers should be handled(e.g. `\n`, `<`, `>`, `&`, `'`, '\"')
  *          since Javascript has different escape characters than C. Also, the order of processing characters matters.
+ *      - Most importantly, non-blocking client design.
+ *          [1] `connect` may be blocked due to slow connection.
+ *              => Set `O_NONBLOCK` to sockfd
+ *          [2] client program may block (e.g. `sleep`)
+ *              => Don't wait for response (i.e. `read`) after `write` to server; 
+ *                  instead, use `select` to check when the response is ready to `read`.
  */
 
 #include <iostream>
@@ -193,7 +199,7 @@ void NP::printFooter() {
 }
 
 void NP::printBody() {
-//    setenv("QUERY_STRING", "h1=127.0.0.1&p1=4411&f1=t1.txt&h2=127.0.0.1&p2=4411&f2=t2.txt&h3=127.0.0.1&p3=4411&f3=t3.txt&h4=127.0.0.1&p4=4411&f4=t4.txt&h5=127.0.0.1&p5=4411&f5=t5.txt", 1);
+//    setenv("QUERY_STRING", "h1=127.0.0.1&p1=4414&f1=t5.txt&h2=127.0.0.1&p2=4413&f2=t6.txt&h3=127.0.0.1&p3=4415&f3=t7.txt&h4=127.0.0.1&p4=4410&f4=t4.txt&h5=127.0.0.1&p5=4410&f5=t1.txt", 1);
     char* data = getenv("QUERY_STRING");
     char ip[CLIENT_MAX_NUMBER][INET_ADDRSTRLEN];
     char port[CLIENT_MAX_NUMBER][6];
@@ -297,7 +303,6 @@ void NP::executeClientPrograms() {
         memcpy(&wfds, &ws, sizeof(wfds));
         
         toCheck = select(nfds, &rfds, &wfds, NULL, 0);
-        printLog("toCheck: " + to_string(toCheck));
         
         for (int j = 0; j < numberOfMachines; j++) {
             
@@ -355,6 +360,7 @@ void NP::executeClientPrograms() {
                 getline(clients[j].getFile(), input);
                 input += "\n";  // indicate EOL
                 
+                // if exit is sent, exit after next write
                 if (input.find("exit") == 0) {
                     clients[j].setExitStatus(true);
                 }
