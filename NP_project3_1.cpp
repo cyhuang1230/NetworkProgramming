@@ -5,7 +5,8 @@
  *      - Parsing query string needs to be handled carefully.
  *      - Since we're client now, doesn't matter which port to use, i.e. no need to `bind` anymore!
  *      - Try using `flag`(bitwise comparison) instead of individually specifying each property in `log` function.
- *      - Print output should be handled(e.g. `<br/>`, `<`, `>`...) since Javascript has different escape characters than C.
+ *      - Output recerived from servers should be handled(e.g. `\n`, `<`, `>`, `&`, `'`, '\"')
+ *          since Javascript has different escape characters than C. Also, the order of processing characters matters.
  */
 
 #include <iostream>
@@ -19,6 +20,7 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <ctime>
 using namespace std;
 
 #define CLIENT_MAX_NUMBER 5
@@ -28,10 +30,13 @@ using namespace std;
 enum fd_status {F_CONNECTING, F_READING, F_WRITING, F_DONE};
 
 // for log flag
-#define IS_LOG 1 << 0
-#define IS_ERROR 1 << 1
-
+#define IS_LOG (1 << 0)
+#define IS_ERROR (1 << 1)
+#define NEED_NEWLINE (1 << 2)
 char buffer[BUFFER_SIZE];
+
+// for log time
+time_t start, now;
 
 namespace NP {
 
@@ -50,6 +55,10 @@ namespace NP {
      */
     void print(string domId, string msg, int flag = 0);
     
+    void printLog(string msg) {
+        print("ALL", msg, IS_LOG | NEED_NEWLINE);
+    }
+    
     void resetBuffer() {
         bzero(buffer, BUFFER_SIZE);
     }
@@ -57,8 +66,6 @@ namespace NP {
     void writeWrapper(int sockfd, const char buffer[], size_t size);
     
     string readWrapper(int sockfd);
-    
- 
     
     class Client {
         char ip[INET_ADDRSTRLEN];
@@ -68,6 +75,7 @@ namespace NP {
         int sockfd;
         fd_status sockStatus = F_CONNECTING;
         ifstream file;
+        bool sentExit = false;
         
     public:
         Client() {}
@@ -114,6 +122,18 @@ namespace NP {
             sockStatus = newStatus;
         }
         
+        ifstream& getFile() {
+            return file;
+        }
+        
+        bool hasSentExit() {
+            return sentExit;
+        }
+        
+        void setExitStatus(bool status) {
+            sentExit = status;
+        }
+        
         /**
          *	Execute program and constantly produce output
          */
@@ -135,6 +155,8 @@ Client clients[CLIENT_MAX_NUMBER];
 int numberOfMachines = 0;
 
 int main() {
+    
+    time(&start);
     
     printHeader();
     
@@ -171,7 +193,7 @@ void NP::printFooter() {
 }
 
 void NP::printBody() {
-
+//    setenv("QUERY_STRING", "h1=127.0.0.1&p1=4411&f1=t1.txt&h2=127.0.0.1&p2=4411&f2=t2.txt&h3=127.0.0.1&p3=4411&f3=t3.txt&h4=127.0.0.1&p4=4411&f4=t4.txt&h5=127.0.0.1&p5=4411&f5=t5.txt", 1);
     char* data = getenv("QUERY_STRING");
     char ip[CLIENT_MAX_NUMBER][INET_ADDRSTRLEN];
     char port[CLIENT_MAX_NUMBER][6];
@@ -238,9 +260,11 @@ void NP::executeClientPrograms() {
      */
     for (int i = 0; i < numberOfMachines; i++) {
         if (!clients[i].connect()) {
-            print("ALL", "Client `" + clients[i].getDomId() + "` encounters error. Stop program.", IS_LOG | IS_ERROR);
+            print("ALL", "Client `" + clients[i].getDomId() + "` encounters error. Stop program.", IS_LOG | IS_ERROR | NEED_NEWLINE);
             return;
         }
+        // print intro
+        clients[i].print("Client id #" + to_string(i) + ": sockfd: " + to_string(clients[i].getSockFd()), IS_LOG | NEED_NEWLINE);
     }
     
     // fd related
@@ -273,65 +297,91 @@ void NP::executeClientPrograms() {
         memcpy(&wfds, &ws, sizeof(wfds));
         
         toCheck = select(nfds, &rfds, &wfds, NULL, 0);
-
-        for (int i = 0; i < toCheck; i++) {
+        printLog("toCheck: " + to_string(toCheck));
+        
+        for (int j = 0; j < numberOfMachines; j++) {
             
-            for (int j = 0; j < numberOfMachines; j++) {
+            if (clients[j].getSockStatus() == F_CONNECTING &&
+                (FD_ISSET(clients[j].getSockFd(), &rfds) || FD_ISSET(clients[j].getSockFd(), &wfds))) {
                 
-                if (clients[j].getSockStatus() == F_CONNECTING &&
-                    (FD_ISSET(clients[j].getSockFd(), &rfds) || FD_ISSET(clients[j].getSockFd(), &wfds))) {
-
-                    // error
-                    if (getsockopt(clients[j].getSockFd(), SOL_SOCKET, SO_ERROR, &error, &error_len) != 0 ||
-                        error != 0) {
-                        print(clients[j].getDomId(), "Connection error: " + string(strerror(error)), IS_ERROR);
-                        return;
-                    }
-                    
-                    // we have to read prompt first
-                    clients[j].setSockStatus(F_READING);
-                    
-                    // remove from write fd so that we can read it in next select
-                    FD_CLR(clients[j].getSockFd(), &ws);
-                    
-                } else if (clients[j].getSockStatus() == F_READING && FD_ISSET(clients[j].getSockFd(), &rfds)) {
-                    
-                    string strRead = readWrapper(clients[j].getSockFd());
-                    clients[j].print(strRead, 0);
-                    clients[j].print(strRead, IS_LOG);
-                    
-                    // only write when prompt is read
-                    if (strRead.find("% ") != string::npos) {
-
-                        // finish reading, write next time.
-                        clients[j].setSockStatus(F_WRITING);
-                        
-                        // remove from read fd
-                        FD_CLR(clients[j].getSockFd(), &rs);
-                        
-                        // put in write fd
-                        FD_SET(clients[j].getSockFd(), &ws);
-                    }
-                    
-                } else if (clients[j].getSockStatus() == F_WRITING && FD_ISSET(clients[j].getSockFd(), &wfds)) {
-                    
-                    // @TODO: read input from file
-                    char test[] = "ls\n";
-                    writeWrapper(clients[j].getSockFd(), test, strlen(test));
-                    
-                    // finish writing, read next time.
-                    clients[j].setSockStatus(F_READING);
-                    
-                    // remove from write fd
-                    FD_CLR(clients[j].getSockFd(), &ws);
-                    
-                    // put in read fd
-                    FD_SET(clients[j].getSockFd(), &rs);
+                // error
+                if (getsockopt(clients[j].getSockFd(), SOL_SOCKET, SO_ERROR, &error, &error_len) != 0 ||
+                    error != 0) {
+                    print(clients[j].getDomId(), "Connection error: " + string(strerror(error)), IS_ERROR);
+                    return;
                 }
                 
-            }   // end for of checking every machine
+                // we have to read prompt first
+                clients[j].setSockStatus(F_READING);
+                
+                // remove from write fd so that we can read it in next select
+                FD_CLR(clients[j].getSockFd(), &ws);
+                
+            } else if (clients[j].getSockStatus() == F_READING && FD_ISSET(clients[j].getSockFd(), &rfds)) {
+                
+                string strRead = readWrapper(clients[j].getSockFd());
+                
+                // write to webpage
+                clients[j].print(strRead);
+                clients[j].print(strRead, IS_LOG | NEED_NEWLINE);  // log
+                
+                // only write when prompt is read
+                if (strRead.find("% ") != string::npos) {
+                    
+                    // finish reading, write next time.
+                    clients[j].setSockStatus(F_WRITING);
+                    
+                    // remove from read fd
+                    FD_CLR(clients[j].getSockFd(), &rs);
+                    
+                    // put in write fd
+                    FD_SET(clients[j].getSockFd(), &ws);
+                    
+                } else if (clients[j].hasSentExit()) {
+                    
+                    // if the client is ready to exit
+                    // remove from read fd and set status to F_DONE
+                    FD_CLR(clients[j].getSockFd(), &rs);
+                    
+                    clients[j].setSockStatus(F_DONE);
+                    
+                    connections--;
+                }
+                
+            } else if (clients[j].getSockStatus() == F_WRITING && FD_ISSET(clients[j].getSockFd(), &wfds)) {
+                
+                // get input from file
+                string input;
+                getline(clients[j].getFile(), input);
+                input += "\n";  // indicate EOL
+                
+                if (input.find("exit") == 0) {
+                    clients[j].setExitStatus(true);
+                }
+                
+                // write to webpage
+                clients[j].print(input);
+                clients[j].print(input, IS_LOG | NEED_NEWLINE);    // log
+                
+                // write to server
+                writeWrapper(clients[j].getSockFd(), input.c_str(), input.size());
+                
+                // finish writing, read next time.
+                clients[j].setSockStatus(F_READING);
+                
+                // remove from write fd
+                FD_CLR(clients[j].getSockFd(), &ws);
+                
+                // put in read fd
+                FD_SET(clients[j].getSockFd(), &rs);
+            }
             
-        }   // end for of toCheck
+            if (--toCheck > 0) {    // continue if still have availabe socket
+                continue;
+            }
+            
+        }   // end for of checking every machine
+        
     }
 }
 
@@ -353,7 +403,6 @@ bool NP::Client::connect() {
         print("File `" + string(filename) + "` cannot be opened.", IS_ERROR);
         return false;
     }
-    print("File `" + string(filename) + "` opened! Start connecting...", IS_LOG);
     
     /**
      *	Get server info
@@ -400,7 +449,8 @@ bool NP::Client::connect() {
 void NP::print(string domId, string msg, int flag) {
     
     if (flag & IS_LOG) {
-        cout << "<script>document.all['log'].innerHTML += \"[" + domId + "] ";
+        time(&now);
+        cout << "<script>document.all['log'].innerHTML += \"[" + domId + ", " + to_string(difftime(now, start)) + "s] ";
     } else {
         cout << "<script>document.all['" + domId + "'].innerHTML += \"";
     }
@@ -413,6 +463,34 @@ void NP::print(string domId, string msg, int flag) {
      *	Process msg
      */
     size_t found;
+    
+    // replace `&` with `&amp;`
+    found = msg.find("&");
+    while (found != string::npos) {
+        msg.replace(found, 1, "&amp;");
+        found = msg.find("&");
+    }
+    
+    // replace `"` with `&quot;`
+    found = msg.find("\"");
+    while (found != string::npos) {
+        msg.replace(found, 1, "&quot;");
+        found = msg.find("\"");
+    }
+    
+    // replace `'` with `&apos;`
+    found = msg.find("'");
+    while (found != string::npos) {
+        msg.replace(found, 1, "&apos;");
+        found = msg.find("'");
+    }
+    
+    // replace ` ` with `&nbsp;`
+    found = msg.find(" ");
+    while (found != string::npos) {
+        msg.replace(found, 1, "&nbsp;");
+        found = msg.find(" ");
+    }
     
     // replace `<` with `&lt;`
     found = msg.find("<");
@@ -428,14 +506,27 @@ void NP::print(string domId, string msg, int flag) {
         found = msg.find(">");
     }
     
-    // replace `\n` with `<br/>
+    // replace `\n` with `<br/>`
     found = msg.find("\n");
     while (found != string::npos) {
         msg.replace(found, 1, "<br/>");
         found = msg.find("\n");
     }
     
-    cout << msg + "<br/>\";</script>";
+    // remove `\r`
+    found = msg.find("\r");
+    while (found != string::npos) {
+        msg.replace(found, 1, "");
+        found = msg.find("\r");
+    }
+    
+    cout << msg;
+    
+    if (flag & NEED_NEWLINE) {
+        cout << "<br/>";
+    }
+    
+    cout << "\";</script>\n";
 }
 
 void NP::writeWrapper(int sockfd, const char buffer[], size_t size) {
@@ -444,17 +535,17 @@ void NP::writeWrapper(int sockfd, const char buffer[], size_t size) {
     int bytesWritten = 0;
     int bytesToWrite = strlen(buffer);
     string domId = "sockfd " + to_string(sockfd);
-    print(domId, "write(expected size = " + to_string(size) + ", via fd " + to_string(sockfd) +"):\n" + string(buffer), IS_LOG);
+    print(domId, "write(expected size = " + to_string(size) + ", via fd " + to_string(sockfd) +"):\n" + string(buffer), IS_LOG | NEED_NEWLINE);
 
     // in case write doesn't successful in one time
     while (bytesWritten < bytesToWrite) {
         
         int n = write(sockfd, buffer + bytesWritten, size - bytesWritten);
         
-        print(domId, "  written(n = " + to_string(n) + ", total: " + to_string(n+bytesWritten) + "/" + to_string(bytesToWrite) +")", IS_LOG);
+        print(domId, "  written(n = " + to_string(n) + ", total: " + to_string(n+bytesWritten) + "/" + to_string(bytesToWrite) +")", IS_LOG | NEED_NEWLINE);
         
         if (n < 0) {
-            print(domId, "write error: " + string(buffer), IS_LOG | IS_ERROR);
+            print(domId, "write error: " + string(buffer), IS_LOG | IS_ERROR | NEED_NEWLINE);
         }
         
         bytesWritten += n;
@@ -471,14 +562,15 @@ string NP::readWrapper(int sockfd) {
 
     if (n < 0) {
         
-        print(domId, "read error: " + string(buffer), IS_LOG | IS_ERROR);
-
+        print(domId, "read error: " + string(buffer), IS_LOG | IS_ERROR | NEED_NEWLINE);
+        return string();
+        
     } else if (n == 0) {
     
         return string();
     }
 
-    print(domId, "read(size = " + to_string(sizeof(buffer)) + ", n = " + to_string(n) + ", via fd " + to_string(sockfd) +"):\n" + string(buffer), IS_LOG);
+    print(domId, "read(size = " + to_string(sizeof(buffer)) + ", n = " + to_string(n) + ", via fd " + to_string(sockfd) +"):\n" + string(buffer), IS_LOG | NEED_NEWLINE);
 
     return string(buffer);
 }
