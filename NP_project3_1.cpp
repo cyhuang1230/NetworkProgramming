@@ -1,3 +1,8 @@
+//  NCTU CS. Network Programming Assignment 3 Part I
+//  CGI. Please refer to hw3spec.txt for more details.
+
+//  Code by Denny Chien-Yu Huang, 10/25/15.
+//  Github: http://cyhuang1230.github.io/
 
 /**
  *	Main idea:
