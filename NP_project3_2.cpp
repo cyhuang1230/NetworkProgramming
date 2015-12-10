@@ -24,6 +24,7 @@
 #include <fstream>
 #include <vector>
 #include <utility>
+#include <sys/stat.h>
 using namespace std;
 
 #define MAX_SIZE 15001
@@ -31,9 +32,17 @@ using namespace std;
 
 //#define DEBUG 1
 
+/// HW3 Related
+#define PROTOCOL "HTTP/1.1"
+#define SERVER "CYH_NP_SERVER/44.10"
+#define HEADER_SIZE 8192
+#define MIME_CGI "cgi"
+
 char buffer[MAX_SIZE];
 
 namespace NP {
+    
+    int curSockfd = STDOUT_FILENO;
     
    	void log(string str, bool error = false, bool newline = true, bool prefix = true) {
 		
@@ -51,7 +60,7 @@ namespace NP {
 		cout.flush();
 	}
     
-    void log_ch(char* ch, bool error = false, bool newline = true, bool prefix = true) {
+    void log(char* ch, bool error = false, bool newline = true, bool prefix = true) {
         
         if (error && prefix) {
             printf("ERROR: ");
@@ -104,29 +113,21 @@ namespace NP {
         }
     }
 	
-	string readWrapper(int sockfd, bool needPrompt = true) {
+	char* readWrapper(int sockfd, bool needPrompt = true) {
 		
-		// display prompt
-        if (needPrompt) {
-            writeWrapper(sockfd, "% ", 2);
-        }
-
         resetBuffer();
 		int n = read(sockfd, buffer, sizeof(buffer));
 		if (n < 0) {
 		
             NP::err("read error");
         
-        } else if (n == 0) {
-            
-            return string();
         }
         
 #ifdef DEBUG
 		NP::log("read(size = " + to_string(sizeof(buffer)) + ", n = " + to_string(n) + "): \n" + string(buffer));
 #endif
 
-		return string(buffer);
+		return buffer;
 	}
     
     void dup2(const int newfd, const int oldfd, bool needOutput = true) {
@@ -161,7 +162,24 @@ namespace NP {
 #endif
     }
     
-    void cgiPerpare(int sockfd);
+    /// HW3 Related
+    
+    void requestHandler();
+
+    /**
+     *	Send header.
+     *  For `MIME_CGI`: won't output `Content-Type:` line and the newline after header.
+     *
+     *	@param status	HTTP status code
+     *	@param title	status description
+     *	@param mime		MIME type ('MIME_CGI')
+     */
+    void sendHeader(int status, const char* title, const char* mime);
+    
+    void generateErrorPage(int status, const char* title);
+    
+    const char* getMimeType(const char* name);
+
 }
 
 int main(int argc, const char * argv[]) {
@@ -179,15 +197,6 @@ int main(int argc, const char * argv[]) {
 		// read port from input
 		portnum = atoi(argv[1]);
 	}
-#ifndef LOCAL
-    // set PATH to `bin:.` to satisfy requirement
-    setenv("PATH", "bin:.", 1);
-    
-    // change directory to ras to satisfy requirement
-    if (chdir("ras") == -1) {
-        NP::err("chdir error");
-    }
-#endif
     
     // SIGCHLD to prevnet zombie process
 	struct sigaction sigchld_action;
@@ -230,7 +239,7 @@ int main(int argc, const char * argv[]) {
 		clilen = sizeof(cli_addr);
 		newsockfd = ::accept(sockfd, (struct sockaddr *) &cli_addr, &clilen);
 #ifdef DEBUG
-        NP::log("Connection accepted");
+        NP::log("Connection accepted (newsockfd = " + to_string(newsockfd) + ")");
 #endif
 		if (newsockfd < 0) {
 			NP::err("accept error");
@@ -245,7 +254,8 @@ int main(int argc, const char * argv[]) {
             close(sockfd);
 
             // prepare cgi
-            NP::cgiPerpare(newsockfd);
+            NP::curSockfd = newsockfd;
+            NP::requestHandler();
             
             exit(EXIT_SUCCESS);
             
@@ -258,10 +268,100 @@ int main(int argc, const char * argv[]) {
 	return 0;
 }
 
-void NP::cgiPerpare(int sockfd) {
+void NP::requestHandler() {
 
     /**
      *  Read HTTP request
      */
-    string req = readWrapper(sockfd);
+    
+    readWrapper(curSockfd);
+    char req[MAX_SIZE];
+    strcpy(req, buffer);
+    
+    // GET / HTTP/1.1
+    char* method = strtok(req, " ");
+    char* path = strtok(NULL, " ");
+    path = &path[1];    // change to cwd
+    
+    // validate request
+    // only GET is supported
+    if (strcasecmp(method, "GET")) {
+        generateErrorPage(405, "Method Not Allowed");
+    }
+    
+    // validate path
+    int lenPath = strlen(path);
+    for (int i = 1; i < lenPath; i++) {
+        if (path[i-1] == '.' && path[i] == '.') {
+            generateErrorPage(403, "Forbidden (parent directory)");
+        }
+    }
+    
+    struct stat statbuf;
+    if (stat(path, &statbuf) == -1) {
+        generateErrorPage(404, "Not Found");
+    } else if (S_ISDIR(statbuf.st_mode)) {
+        generateErrorPage(403, "Forbidden (directory listing)");
+    }
+
+    // @TODO: handle GET param
+    
+    /**
+     *  Send headers
+     */
+    sendHeader(200, "OK", "text/html");
+    
+    writeWrapper(curSockfd, "OK", 2);
+}
+
+void NP::sendHeader(int status, const char* title, const char* mime) {
+
+// HTTP/1.1 200 OK\r\n
+// Server: CYH_SERVER/44.10\r\n
+// Connection: close\r\n
+// Content-Type: text/html\r\n\n
+
+    char header[HEADER_SIZE];
+    // HTTP/1.1 200 OK\r\n
+    sprintf(header, "%s %d %s\r\n", PROTOCOL, status, title);
+    // Server: CYH_SERVER/44.10\r\n
+    sprintf(header + strlen(header), "Server: %s\r\n", SERVER);
+    // Connection: close\r\n
+    sprintf(header + strlen(header), "Connection: close\r\n");
+    
+    // Content-Type: text/html\r\n\n
+    if (strcmp(mime, MIME_CGI)) {   // if not cgi
+        sprintf(header + strlen(header), "Content-Type: %s\r\n\n", mime);
+    }
+
+    writeWrapper(curSockfd, header, strlen(header));
+}
+
+void NP::generateErrorPage(int status, const char* title) {
+    
+    sendHeader(status, title, "text/html");
+    
+    char body[1000];
+    sprintf(body, "<html><title>%d %s</title>", status, title);
+    sprintf(body + strlen(body), "<body><h1>%d %s</h1></body></html>", status, title);
+    writeWrapper(curSockfd, body, strlen(body));
+    exit(EXIT_SUCCESS);
+}
+
+
+const char* NP::getMimeType(const char* name) {
+    
+    // get extension
+    char* ext = strrchr(name, '.');
+    
+    if (!ext) {
+        return NULL;
+    }
+    
+    if (strcmp(ext, ".html") == 0 || strcmp(ext, ".htm") == 0)  return "text/html";
+    if (strcmp(ext, ".jpg") == 0 || strcmp(ext, ".jpeg") == 0)  return "image/jpeg";
+    if (strcmp(ext, ".gif") == 0)   return "image/gif";
+    if (strcmp(ext, ".png") == 0)   return "image/png";
+
+    return NULL;
 }
