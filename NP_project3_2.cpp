@@ -25,6 +25,7 @@
 #include <vector>
 #include <utility>
 #include <sys/stat.h>
+#include <fcntl.h>
 using namespace std;
 
 #define MAX_SIZE 15001
@@ -120,7 +121,10 @@ namespace NP {
 		if (n < 0) {
 		
             NP::err("read error");
-        
+
+        } else {
+            
+            return NULL;
         }
         
 #ifdef DEBUG
@@ -257,6 +261,7 @@ int main(int argc, const char * argv[]) {
             NP::curSockfd = newsockfd;
             NP::requestHandler();
             
+            close(newsockfd);
             exit(EXIT_SUCCESS);
             
         } else {
@@ -280,9 +285,17 @@ void NP::requestHandler() {
     
     // GET / HTTP/1.1
     char* method = strtok(req, " ");
-    char* path = strtok(NULL, " ");
-    path = &path[1];    // change to cwd
+    char* pathAndParam = strtok(NULL, " ");
     
+    char* paramFromGet = strchr(pathAndParam, '?');    // param mat be null
+    if (paramFromGet != NULL) {
+        paramFromGet++; // get the next character from '?'
+    }
+    char* path = strtok(pathAndParam, "?");
+    char* ext = strrchr(path, '.');  // ext may be null
+    path = &path[1];    // change to cwd
+    printf("path = %s, get = %s, ext = %s", path, paramFromGet, ext);
+
     // validate request
     // only GET is supported
     if (strcasecmp(method, "GET")) {
@@ -304,12 +317,24 @@ void NP::requestHandler() {
         generateErrorPage(403, "Forbidden (directory listing)");
     }
 
-    // @TODO: handle GET param
+    // handle GET param
+    if (paramFromGet != NULL) {
+        setenv("QUERY_STRING", paramFromGet, 1);
+    }
     
     /**
      *  Send headers
      */
     sendHeader(200, "OK", "text/html");
+    
+    /**
+     *  Read file
+     */
+    int fileFd = open(path, O_RDONLY);
+    while (readWrapper(fileFd) != NULL) {
+        writeWrapper(curSockfd, buffer, sizeof(buffer));
+    }
+    
     
     writeWrapper(curSockfd, "OK", 2);
 }
