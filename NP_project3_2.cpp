@@ -37,7 +37,9 @@ using namespace std;
 #define PROTOCOL "HTTP/1.1"
 #define SERVER "CYH_NP_SERVER/44.10"
 #define HEADER_SIZE 8192
-#define MIME_CGI "cgi"
+#define MIME_CGI ".cgi"
+
+#define BUFFER_DONT_RESET (1 << 0)
 
 char buffer[MAX_SIZE];
 
@@ -101,9 +103,12 @@ namespace NP {
 		bzero(buffer, MAX_SIZE);
 	}
 	
-    void writeWrapper(int sockfd, const char buffer[], size_t size) {
+    void writeWrapper(int sockfd, const char buffer[], size_t size, bool flag = 0) {
 
-        resetBuffer();
+        if (!(flag & BUFFER_DONT_RESET)) {
+            resetBuffer();
+        }
+        
         int n = write(sockfd, buffer, size);
 #ifdef DEBUG
         NP::log("write(size = " + to_string(size) + ", n = " + to_string(n) + ", via fd " + to_string(sockfd) +"): \n" + string(buffer));
@@ -122,7 +127,7 @@ namespace NP {
 		
             NP::err("read error");
 
-        } else {
+        } else if (n == 0) {
             
             return NULL;
         }
@@ -145,27 +150,6 @@ namespace NP {
         }
     }
     
-    void close(const int fd, const int i, const int j, string errmsg = "", string sucmsg = "", bool needOutput = true) {
-        
-        if (::close(fd) == -1) {
-
-            if (errmsg.empty()) {
-            
-                NP::err("close pipes[" + to_string(i) + "][" + to_string(j) + "] error " + to_string(errno));
-                
-            } else {
-                
-                NP::err(errmsg);
-            }
-        }
-        
-#ifdef DEBUG
-        if (needOutput) {
-            sucmsg.empty() ? NP::log("close pipes[" + to_string(i) + "][" + to_string(j) + "]") : NP::log(sucmsg);
-        }
-#endif
-    }
-    
     /// HW3 Related
     
     void requestHandler();
@@ -182,8 +166,7 @@ namespace NP {
     
     void generateErrorPage(int status, const char* title);
     
-    const char* getMimeType(const char* name);
-
+    const char* getMimeType(char* name);
 }
 
 int main(int argc, const char * argv[]) {
@@ -294,7 +277,7 @@ void NP::requestHandler() {
     char* path = strtok(pathAndParam, "?");
     char* ext = strrchr(path, '.');  // ext may be null
     path = &path[1];    // change to cwd
-    printf("path = %s, get = %s, ext = %s", path, paramFromGet, ext);
+    printf("path = %s, get = %s, ext = %s\n", path, paramFromGet, ext);
 
     // validate request
     // only GET is supported
@@ -325,18 +308,50 @@ void NP::requestHandler() {
     /**
      *  Send headers
      */
-    sendHeader(200, "OK", "text/html");
+    sendHeader(200, "OK", getMimeType(ext));
     
+    NP::log("after header is sent");
+
     /**
      *  Read file
      */
-    int fileFd = open(path, O_RDONLY);
-    while (readWrapper(fileFd) != NULL) {
-        writeWrapper(curSockfd, buffer, sizeof(buffer));
+    if (strcmp(ext, MIME_CGI)) {    // if not cgi
+        NP::log("this is NOT cgi");
+
+        // read file content and write to web
+        int fileFd = open(path, O_RDONLY);
+        int readLen;
+        while ((readLen = read(fileFd, buffer, sizeof(buffer)))) {
+            writeWrapper(curSockfd, buffer, readLen, BUFFER_DONT_RESET);
+        }
+        
+    } else {    // if cgi
+        NP::log("this is cgi");
+
+        // fork & dup sockfd to stdout
+        switch (fork()) {
+            case -1:
+                NP::err("fork error");
+                break;
+                
+            case 0: // child
+                NP::log("this is child");
+                // set fd
+                dup2(curSockfd, STDOUT_FILENO, false);
+                
+                // exec
+                if (execl(path, NULL) == -1) {
+                    
+                    NP::err("Child exec error");
+                }
+                
+                
+            default:    // parent
+//                close(curSockfd);                
+                break;
+        }
     }
     
-    
-    writeWrapper(curSockfd, "OK", 2);
 }
 
 void NP::sendHeader(int status, const char* title, const char* mime) {
@@ -374,7 +389,7 @@ void NP::generateErrorPage(int status, const char* title) {
 }
 
 
-const char* NP::getMimeType(const char* name) {
+const char* NP::getMimeType(char* name) {
     
     // get extension
     char* ext = strrchr(name, '.');
@@ -383,6 +398,8 @@ const char* NP::getMimeType(const char* name) {
         return NULL;
     }
     
+    if (strcmp(ext, ".cgi") == 0) return MIME_CGI;
+    if (strcmp(ext, ".txt") == 0) return "text/plain";
     if (strcmp(ext, ".html") == 0 || strcmp(ext, ".htm") == 0)  return "text/html";
     if (strcmp(ext, ".jpg") == 0 || strcmp(ext, ".jpeg") == 0)  return "image/jpeg";
     if (strcmp(ext, ".gif") == 0)   return "image/gif";
