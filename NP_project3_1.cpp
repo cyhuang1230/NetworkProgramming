@@ -44,6 +44,7 @@ enum fd_status {F_CONNECTING, F_READING, F_WRITING, F_DONE};
 #define IS_LOG (1 << 0)
 #define IS_ERROR (1 << 1)
 #define NEED_NEWLINE (1 << 2)
+#define NEED_BOLD (1<<3)
 char buffer[BUFFER_SIZE];
 
 // for log time
@@ -91,22 +92,17 @@ namespace NP {
     public:
         Client() {}
         
-        Client(int id, const char* iIp, const char* iPort, const char* iFile);
-        
         // assign operator
-        Client& operator=(const Client& newClient) {
-            strncpy(ip, newClient.ip, INET_ADDRSTRLEN);
-            strncpy(port, newClient.port, 6);
-            strncpy(filename, newClient.filename, FILENAME_LENGTH);
-            domId = newClient.domId;
-            sockfd = newClient.sockfd;
-            sockStatus = newClient.sockStatus;
+        void set(int id, const char* iIp, const char* iPort, const char* iFile) {
             
+            domId = "m" + to_string(id);
+            strncpy(ip, iIp, INET_ADDRSTRLEN);
+            strncpy(port, iPort, 6);
+            strncpy(filename, iFile, FILENAME_LENGTH);
+
             // we *logically* only use assign operator when bootstrap
             // therefore, we open file in ifstream
             file = ifstream(filename, ifstream::in);
-            
-            return *this;
         }
         
         ~Client() {
@@ -204,24 +200,25 @@ void NP::printFooter() {
 }
 
 void NP::printBody() {
-//    setenv("QUERY_STRING", "h1=127.0.0.1&p1=4414&f1=t5.txt&h2=127.0.0.1&p2=4413&f2=t6.txt&h3=127.0.0.1&p3=4415&f3=t7.txt&h4=127.0.0.1&p4=4410&f4=t4.txt&h5=127.0.0.1&p5=4410&f5=t1.txt", 1);
+
+    //    setenv("QUERY_STRING", "h1=127.0.0.1&p1=4414&f1=t5.txt&h2=127.0.0.1&p2=4413&f2=t6.txt&h3=127.0.0.1&p3=4415&f3=t7.txt&h4=127.0.0.1&p4=4410&f4=t4.txt&h5=127.0.0.1&p5=4410&f5=t1.txt", 1);
     char* data = getenv("QUERY_STRING");
     char ip[CLIENT_MAX_NUMBER][INET_ADDRSTRLEN];
     char port[CLIENT_MAX_NUMBER][6];
     char file[CLIENT_MAX_NUMBER][FILENAME_LENGTH];
-    
+
     char* token = strtok(data, "&");
     while (token != NULL && numberOfMachines < 5) {
         
         if (strlen(token) <= 3) {
             // first 3 letters must be sth like `h1=`,
             // so if there's info for us to read,
-            // `token` must longer than 3 words
+            // `token` must be longer than 3 words
             break;
         }
         
         // ip
-        strncpy(ip[numberOfMachines], &token[3], 16);
+        strncpy(ip[numberOfMachines], &token[3], INET_ADDRSTRLEN);
         
         // port
         token = strtok(NULL, "&");
@@ -229,7 +226,7 @@ void NP::printBody() {
 
         // file
         token = strtok(NULL, "&");
-        strncpy(file[numberOfMachines], &token[3], 100);
+        strncpy(file[numberOfMachines], &token[3], FILENAME_LENGTH);
 
         token = strtok(NULL, "&");
         numberOfMachines++;
@@ -237,9 +234,9 @@ void NP::printBody() {
 
     for (int i = 0; i < numberOfMachines; i++) {
         // insert clients
-        clients[i] = Client(i, ip[i], port[i], file[i]);
+        clients[i].set(i, ip[i], port[i], file[i]);
     }
-    
+
     char beforeTableHeader[] =
     "<body bgcolor=#336699>"
     "<font face=\"Courier New\" size=2 color=#FFFF99>"
@@ -371,7 +368,7 @@ void NP::executeClientPrograms() {
                 }
                 
                 // write to webpage
-                clients[j].print(input);
+                clients[j].print(input, NEED_BOLD);
                 clients[j].print(input, IS_LOG | NEED_NEWLINE);    // log
                 
                 // write to server
@@ -397,14 +394,6 @@ void NP::executeClientPrograms() {
 }
 
 /// NP::Client
-NP::Client::Client(int id, const char* iIp, const char* iPort, const char* iFile) {
-    
-    domId = "m" + to_string(id);
-    strncpy(ip, iIp, INET_ADDRSTRLEN);
-    strncpy(port, iPort, 6);
-    strncpy(filename, iFile, FILENAME_LENGTH);
-}
-
 bool NP::Client::connect() {
     
     /**
@@ -529,6 +518,10 @@ void NP::print(string domId, string msg, int flag) {
     while (found != string::npos) {
         msg.replace(found, 1, "");
         found = msg.find("\r");
+    }
+    
+    if (flag & NEED_BOLD) {
+        msg = "<b>" + msg + "</b>";
     }
     
     cout << msg;
