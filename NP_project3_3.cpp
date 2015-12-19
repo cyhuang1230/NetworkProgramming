@@ -68,6 +68,7 @@ namespace NP {
 		char filename[FILENAME_LENGTH];
 		string domId;
 		ifstream file;
+		bool isDone = false;
 
 	public:
 
@@ -146,6 +147,14 @@ namespace NP {
 			sockstatus = newStatus;
 		}
 
+		bool getIsDone() {
+			return isDone;
+		}
+
+		void setIsDone(bool ifDone) {
+			isDone = ifDone;
+		}
+
 		ifstream& getFile() {
 			return file;
 		}
@@ -214,7 +223,7 @@ namespace NP {
 
 	namespace CGI {
 
-		int numberOfMachines = 0;
+		int numberOfMachines = 0, doneMachines = 0;
 
 		void handler(int sockfd, char* param, HWND hwnd);
 
@@ -314,6 +323,7 @@ BOOL CALLBACK MainDlgProc(HWND hwnd, UINT Message, WPARAM wParam, LPARAM lParam)
 					}
 
 					break;
+
 				case ID_EXIT:
 					EndDialog(hwnd, 0);
 					break;
@@ -427,9 +437,27 @@ BOOL CALLBACK MainDlgProc(HWND hwnd, UINT Message, WPARAM wParam, LPARAM lParam)
 				break;
 
 			case FD_CLOSE:
-				EditPrintf(hwndEdit, TEXT("=== WM_SERVER_NOTIFY Sock #%d FD_CLOSE ===\r\n"), curSockfd);
-				cleanup(curSockfd);
-				//@TODO minus numberOfMacines and check if need to print footer
+				EditPrintf(hwndEdit, TEXT("=== WM_SERVER_NOTIFY Sock #%d FD_CLOSE (%d/%d) ===\r\n"), curSockfd, NP::CGI::doneMachines, NP::CGI::numberOfMachines);
+				
+				char str[15000];
+				sprintf(str, "=== WM_SERVER_NOTIFY Sock #%d FD_CLOSE (%d/%d) ===\n", curSockfd, NP::CGI::doneMachines, NP::CGI::numberOfMachines);
+				output << str;
+				output.flush();
+
+				if (NP::findSockInfoBySockfd(curSockfd).getIsDone()) {
+					return true;
+				}
+
+ 				NP::findSockInfoBySockfd(curSockfd).setIsDone(true);
+				closesocket(curSockfd);
+				
+				// check if all machines are done
+				// if so, print footer & close socket
+				NP::CGI::doneMachines++;
+				if (NP::CGI::doneMachines == NP::CGI::numberOfMachines) {
+					NP::CGI::printFooter(websock->getSockFd());
+					cleanup(websock->getSockFd());
+				}
 				
 				break;
 			};
@@ -579,7 +607,7 @@ bool NP::CGI::connectServers(HWND hwnd) {
 			return false;
 		}
 		// print intro
-		clients[i].print("Client id #" + to_string(i) + ": sockfd: " + to_string(clients[i].getSockFd()), IS_LOG | NEED_NEWLINE);
+//		clients[i].print("Client id #" + to_string(i) + ": sockfd: " + to_string(clients[i].getSockFd()), IS_LOG | NEED_NEWLINE);
 	}
 
 	EditPrintf(hwndEdit, TEXT("ConnectServers completed.\r\n"));
@@ -634,11 +662,19 @@ void NP::afterSelect(HWND hwnd) {
 
 	list<int> toCheck;
 	for (int i = 0; i < numberOfMachines; i++) {
-		toCheck.push_back(i);
+		if (!clients[i].getIsDone()) {
+			toCheck.push_back(i);
+		}
 	}
 	
 	for (list<int>::iterator it = toCheck.begin(); it != toCheck.end(); it++) {
+		
+		if (clients[*it].getIsDone()) {
+			continue;
+		}
+		
 		EditPrintf(hwndEdit, TEXT("This is id %d, status = %d, canRead = %d, canWrite = %d\r\n"), *it, clients[*it].getSockStatus(), clients[*it].getCanRead(), clients[*it].getCanWrite());
+		
 		char str[15000];
 		sprintf(str, "This is id %d, status = %d, canRead = %d, canWrite = %d\n", *it, clients[*it].getSockStatus(), clients[*it].getCanRead(), clients[*it].getCanWrite());
 		output << str;
@@ -654,7 +690,7 @@ void NP::afterSelect(HWND hwnd) {
 			}
 
 			// write to webpage
-			clients[*it].print(strRead, NEED_BOLD);
+			clients[*it].print(strRead);
 			//clients[*it].print(strRead, IS_LOG | NEED_NEWLINE);
 
 			// only write when prompt is read
@@ -695,7 +731,7 @@ void NP::afterSelect(HWND hwnd) {
 			}
 
 			// write to webpage
-			clients[*it].print(input);
+			clients[*it].print(input, NEED_BOLD);
 			//clients[*it].print(input, IS_LOG | NEED_NEWLINE);  // log
 
 			// write to server
@@ -963,6 +999,7 @@ const char* NP::getMimeType(char* name) {
 void NP::cleanup(SOCKET sockfd) {
 
 	closesocket(sockfd);
+	WSACleanup();
 }
 
 NP::SockInfo& NP::findSockInfoBySockfd(SOCKET sockfd) {
