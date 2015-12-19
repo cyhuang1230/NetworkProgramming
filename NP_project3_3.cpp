@@ -14,6 +14,7 @@ using namespace std;
 #define SERVER_PORT 4410
 
 #define WM_SOCKET_NOTIFY (WM_USER + 1)
+#define WM_SERVER_NOTIFY (WM_USER + 2)
 
 // NP
 #define DEBUG 1
@@ -32,6 +33,8 @@ using namespace std;
 #define IS_LOG (1 << 0)
 #define IS_ERROR (1 << 1)
 #define NEED_NEWLINE (1 << 2)
+#define NEED_BOLD (1<<3)
+
 // for log time
 time_t start, now;
 
@@ -52,6 +55,8 @@ namespace NP {
 		
 		// for Browser
 		char buffer[MAX_SIZE];
+		bool hasRead = false;
+		bool hasWrite = false;
 
 		// for Server
 		SockStatus sockstatus = CONNECTING;
@@ -62,7 +67,7 @@ namespace NP {
 		char port[6];
 		char filename[FILENAME_LENGTH];
 		string domId;
-		ifstream& file = ifstream();
+		ifstream file;
 
 	public:
 
@@ -80,41 +85,25 @@ namespace NP {
 			strncpy(ip, iIp, INET_ADDRSTRLEN);
 			strncpy(port, iPort, 6);
 			strncpy(filename, iFile, FILENAME_LENGTH);
-		}
 
-		// assign operator
-		SockInfo& operator=(const SockInfo& newSock) {
-
-			sockstatus = newSock.sockstatus;
-			canRead = newSock.canRead;
-			canWrite = newSock.canWrite;
-			sentExit = newSock.sentExit;
-			strncpy(ip, newSock.ip, INET_ADDRSTRLEN);
-			strncpy(port, newSock.port, 6);
-			strncpy(filename, newSock.filename, FILENAME_LENGTH);
-			domId = newSock.domId;
-
-			// we *logically* only use assign operator when bootstrap
-			// therefore, we open file in ifstream
 			file = ifstream(filename, ifstream::in);
-
-			return *this;
 		}
-
-		string getIp() {
-			return string(ip);
-		}
-
-		string getDomId() {
-			return domId;
-		}
-
+		
 		SOCKET getSockFd() {
 			return sockfd;
 		}
 
 		SockType getSockType() {
 			return socktype;
+		}
+
+		// For Servers
+		string getIp() {
+			return string(ip);
+		}
+
+		string getDomId() {
+			return domId;
 		}
 
 		SockStatus getSockStatus() {
@@ -137,6 +126,22 @@ namespace NP {
 			return canWrite;
 		}
 
+		void setHasWrite(bool isWritten) {
+			hasWrite = isWritten;
+		}
+
+		void setHasRead(bool isRead) {
+			hasRead = isRead;
+		}
+
+		bool getHasWrite() {
+			return hasWrite;
+		}
+
+		bool getHasRead() {
+			return hasRead;
+		}
+
 		void setSockStatus(SockStatus newStatus) {
 			sockstatus = newStatus;
 		}
@@ -152,6 +157,8 @@ namespace NP {
 		void setExitStatus(bool status) {
 			sentExit = status;
 		}
+
+		bool connectServer(HWND hwnd);
 
 		void print(string msg, int flag = 0);
 	};
@@ -185,7 +192,7 @@ namespace NP {
 
 	/// HW3 Related
 
-	void requestHandler(int sockfd);
+	void requestHandler(int sockfd, char req[MAX_SIZE], HWND hwnd);
 
 	/**
 	*	Send header.
@@ -209,11 +216,13 @@ namespace NP {
 
 		int numberOfMachines = 0;
 
-		void handler(int sockfd, char* param);
+		void handler(int sockfd, char* param, HWND hwnd);
 
 		void printHeader(int sockfd);
 
 		void printBody(int sockfd);
+
+		bool connectServers(HWND hwnd);
 
 		void printFooter(int sockfd);
 	}
@@ -221,10 +230,12 @@ namespace NP {
 }
 
 using namespace NP;
-list<NP::SockInfo> Socks;
+NP::SockInfo* websock;
 vector<NP::SockInfo> clients;
 char buffer[MAX_SIZE];
-
+char req[MAX_SIZE];
+SOCKET ssock;
+ofstream output;
 BOOL CALLBACK MainDlgProc(HWND, UINT, WPARAM, LPARAM);
 int EditPrintf(HWND, TCHAR *, ...);
 static HWND hwndEdit;
@@ -232,7 +243,8 @@ static HWND hwndEdit;
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
 	LPSTR lpCmdLine, int nCmdShow)
 {
-	
+	output = ofstream("log.txt", ofstream::out | ofstream::app);
+	output << "--------------------------------------" << endl;
 	return DialogBox(hInstance, MAKEINTRESOURCE(ID_MAIN), NULL, MainDlgProc);
 }
 
@@ -240,13 +252,14 @@ BOOL CALLBACK MainDlgProc(HWND hwnd, UINT Message, WPARAM wParam, LPARAM lParam)
 {
 	WSADATA wsaData;
 
-	static SOCKET msock, ssock;
+	static SOCKET msock;
 	static struct sockaddr_in sa;
 
 	int err;
 
 	switch(Message) 
 	{
+		EditPrintf(hwndEdit, TEXT("=== message: $d ===\r\n", Message));
 		case WM_INITDIALOG:
 			hwndEdit = GetDlgItem(hwnd, IDC_RESULT);
 			break;
@@ -314,35 +327,32 @@ BOOL CALLBACK MainDlgProc(HWND hwnd, UINT Message, WPARAM wParam, LPARAM lParam)
 		case WM_SOCKET_NOTIFY:
 		{
 			SOCKET curSockfd = wParam;
+//			if (WSAGETSELECTERROR(lParam))
+	//			EditPrintf(hwndEdit, TEXT("=== WM_SOCKET_NOTIFY: WSAGETSELECTERROR %d ===\r\n"), WSAGETSELECTERROR(lParam));
+
 			switch( WSAGETSELECTEVENT(lParam) )
 			{
-				case FD_CONNECT:
-					EditPrintf(hwndEdit, TEXT("=== Sock #%d FD_CONNECT ===\r\n"), curSockfd);
-
-					// connection is established
-					// start listening FD_READ for prompt
-					WSAAsyncSelect(curSockfd, hwnd, WM_SOCKET_NOTIFY, FD_CLOSE | FD_READ);
-					NP::findSockInfoBySockfd(curSockfd).setSockStatus(READING);
-					break;
-
 				case FD_ACCEPT:
+					EditPrintf(hwndEdit, TEXT("=== Sock #%d FD_ACCEPT ===\r\n"), curSockfd);
+
 					ssock = accept(msock, NULL, NULL);
-					Socks.push_back(NP::SockInfo(ssock));
-					EditPrintf(hwndEdit, TEXT("=== Accept one new client(%d), List size:%d ===\r\n"), ssock, Socks.size());
+					websock = new NP::SockInfo(ssock);
+					EditPrintf(hwndEdit, TEXT("=== Accept one new client(%d) ===\r\n"), ssock);
 					break;
 
 				case FD_READ:
 				{
 					EditPrintf(hwndEdit, TEXT("=== Sock #%d FD_READ ===\r\n"), curSockfd);
 					
-					if (NP::findSockInfoBySockfd(curSockfd).getSockType() == Browser) {
-
-						requestHandler(NP::findSockInfoBySockfd(curSockfd).getSockFd());
-						cleanup(curSockfd);
-
-					} else {
-
-						NP::findSockInfoBySockfd(curSockfd).setCanRead(true);
+					NP::readWrapper(curSockfd);
+					strcpy(req, buffer);
+					websock->setHasRead(true);
+					WSAAsyncSelect(ssock, hwnd, WM_SOCKET_NOTIFY, FD_CLOSE | FD_WRITE);
+					
+					// check if canWrite, if so, do write
+					if (websock->getCanWrite() && !websock->getHasWrite()) {
+						NP::requestHandler(ssock, req, hwnd);
+						websock->setHasWrite(true);
 					}
 
 					break;
@@ -350,24 +360,85 @@ BOOL CALLBACK MainDlgProc(HWND hwnd, UINT Message, WPARAM wParam, LPARAM lParam)
 
 				case FD_WRITE:
 					EditPrintf(hwndEdit, TEXT("=== Sock #%d FD_WRITE ===\r\n"), curSockfd);
-					if (NP::findSockInfoBySockfd(curSockfd).getSockType() == Server) {
-						NP::findSockInfoBySockfd(curSockfd).setCanWrite(true);
+					
+					websock->setCanWrite(true);
+
+					// check if hasRead, 
+					// if not, set canWrite
+					// else, write!
+					if (websock->getHasRead() && !websock->getHasWrite()) {
+						NP::requestHandler(ssock, req, hwnd);
+						websock->setHasWrite(true);
 					}
+
 					break;
 
 				case FD_CLOSE:
 					EditPrintf(hwndEdit, TEXT("=== Sock #%d FD_CLOSE ===\r\n"), curSockfd);
-					if (NP::findSockInfoBySockfd(curSockfd).getSockType() == Server) {
-						cleanup(curSockfd);
-					}
+					//cleanup(curSockfd);
 					break;
+			};
+
+			break;
+		}
+
+		case WM_SERVER_NOTIFY:
+		{
+			SOCKET curSockfd = wParam;
+			if(WSAGETSELECTERROR(lParam))
+				EditPrintf(hwndEdit, TEXT("=== WM_SERVER_NOTIFY: WSAGETSELECTERROR %x ===\r\n"), WSAGETSELECTERROR(lParam));
+
+			switch (WSAGETSELECTEVENT(lParam)) {
+
+			case FD_CONNECT:
+			{
+				EditPrintf(hwndEdit, TEXT("=== WM_SERVER_NOTIFY Sock #%d FD_CONNECT ===\r\n"), curSockfd);
+
+				// connection is established
+				// check if success
+				int error = 0;
+				int error_len = sizeof(error);
+				if (getsockopt(curSockfd, SOL_SOCKET, SO_ERROR, (char*)&error, &error_len) == SOCKET_ERROR ||
+					error != 0) {
+					EditPrintf(hwndEdit, TEXT("=== Error: connect error %x (in FD_CONNECT) ===\r\n", WSAGetLastError()));
+					break;
+				}
+
+				// start listening FD_READ for prompt
+				WSAAsyncSelect(curSockfd, hwnd, WM_SERVER_NOTIFY, FD_CLOSE | FD_READ | FD_WRITE);
+				NP::findSockInfoBySockfd(curSockfd).setSockStatus(READING);
+				break;
+			}
+
+			case FD_ACCEPT:
+				EditPrintf(hwndEdit, TEXT("=== WM_SERVER_NOTIFY Sock #%d FD_ACCEPT ===\r\n"), curSockfd);
+				break;
+
+			case FD_READ:
+			{
+				EditPrintf(hwndEdit, TEXT("=== WM_SERVER_NOTIFY Sock #%d FD_READ ===\r\n"), curSockfd);
+				NP::findSockInfoBySockfd(curSockfd).setCanRead(true);
+				break;
+			}
+
+			case FD_WRITE:
+				EditPrintf(hwndEdit, TEXT("=== WM_SERVER_NOTIFY Sock #%d FD_WRITE ===\r\n"), curSockfd);
+				NP::findSockInfoBySockfd(curSockfd).setCanWrite(true);	
+				break;
+
+			case FD_CLOSE:
+				EditPrintf(hwndEdit, TEXT("=== WM_SERVER_NOTIFY Sock #%d FD_CLOSE ===\r\n"), curSockfd);
+				cleanup(curSockfd);
+				//@TODO minus numberOfMacines and check if need to print footer
+				
+				break;
 			};
 
 			// go through every socket to take corresponding action
 			NP::afterSelect(hwnd);
 			break;
 		}
-
+		
 		default:
 			return FALSE;
 	};
@@ -399,7 +470,7 @@ using namespace NP;
 using namespace NP::CGI;
 
 // CGI
-void NP::CGI::handler(int sockfd, char* param) {
+void NP::CGI::handler(int sockfd, char* param, HWND hwnd) {
 
 	time(&start);
 
@@ -407,10 +478,9 @@ void NP::CGI::handler(int sockfd, char* param) {
 
 	printBody(sockfd);
 
-	//executeClientPrograms();
+	connectServers(hwnd);
 
-	printFooter(sockfd);
-
+	///printFooter(sockfd);
 }
 
 void NP::CGI::printHeader(int sockfd) {
@@ -500,65 +570,144 @@ void NP::CGI::printBody(int sockfd) {
 	writeWrapper(sockfd, afterTableData, strlen(afterTableData));
 }
 
+bool NP::CGI::connectServers(HWND hwnd) {
+
+	for (int i = 0; i < numberOfMachines; i++) {
+		if (!(clients[i].connectServer(hwnd))) {
+			print("ALL", "Client `" + clients[i].getDomId() + "` encounters error. Stop program.", IS_LOG | IS_ERROR | NEED_NEWLINE);
+			EditPrintf(hwndEdit, TEXT("Client `%s` encounters error. Stop program.\r\n", clients[i].getDomId()));
+			return false;
+		}
+		// print intro
+		clients[i].print("Client id #" + to_string(i) + ": sockfd: " + to_string(clients[i].getSockFd()), IS_LOG | NEED_NEWLINE);
+	}
+
+	EditPrintf(hwndEdit, TEXT("ConnectServers completed.\r\n"));
+	return true;
+}
+
+bool NP::SockInfo::connectServer(HWND hwnd) {
+
+	WSADATA wsaData;
+	WSAStartup(MAKEWORD(2, 0), &wsaData);
+
+	SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+	if (sock == INVALID_SOCKET) {
+		
+		EditPrintf(hwndEdit, TEXT("=== Error: socket creation error ===\r\n"));
+		return false;
+	}
+
+	this->sockfd = sock;
+
+	if (WSAAsyncSelect(sock, hwnd, WM_SERVER_NOTIFY, FD_CONNECT | FD_ACCEPT | FD_READ | FD_WRITE | FD_CLOSE) == SOCKET_ERROR) {
+
+		EditPrintf(hwndEdit, TEXT("=== Error: set select on FD_CONNECT error (%d) ===\r\n", WSAGetLastError()));
+		closesocket(sock);
+		WSACleanup();
+		return false;
+	}
+
+	// Resolve IP address for hostname
+	struct hostent *host;
+	if ((host = gethostbyname(this->ip)) == NULL)
+	{
+		EditPrintf(hwndEdit, TEXT("=== Error: gethostbyname error ===\r\n"));
+		return false;
+	}
+
+	// Set up our socket address structure
+	SOCKADDR_IN res;
+	res.sin_port = htons(atoi(this->port));
+	res.sin_family = AF_INET;
+	res.sin_addr.s_addr = *((unsigned long*)host->h_addr);
+
+	if (connect(sock, (LPSOCKADDR)(&res), sizeof(res)) == SOCKET_ERROR && WSAGetLastError() != WSAEWOULDBLOCK) {
+		EditPrintf(hwndEdit, TEXT("=== Error: connect error %d ===\r\n", WSAGetLastError()));
+		return false;
+	}
+
+	return true;
+}
 
 void NP::afterSelect(HWND hwnd) {
 
-	for (list<SockInfo>::iterator it = Socks.begin(); it != Socks.end(); it++) {
+	list<int> toCheck;
+	for (int i = 0; i < numberOfMachines; i++) {
+		toCheck.push_back(i);
+	}
+	
+	for (list<int>::iterator it = toCheck.begin(); it != toCheck.end(); it++) {
+		EditPrintf(hwndEdit, TEXT("This is id %d, status = %d, canRead = %d, canWrite = %d\r\n"), *it, clients[*it].getSockStatus(), clients[*it].getCanRead(), clients[*it].getCanWrite());
+		char str[15000];
+		sprintf(str, "This is id %d, status = %d, canRead = %d, canWrite = %d\n", *it, clients[*it].getSockStatus(), clients[*it].getCanRead(), clients[*it].getCanWrite());
+		output << str;
+		output.flush();
 
-		// this is only for Server type
-		if (it->getSockType() == Browser) {
-			continue;
-		}
+		if (clients[*it].getSockStatus() == READING && clients[*it].getCanRead() == true) {
 
-		if (it->getSockStatus() == READING && it->getCanRead() == true) {
+			string strRead = readWrapper(clients[*it].getSockFd());
 
-			string strRead = readWrapper(it->getSockFd());
+			if (strRead.length() == 0) {
+				//toCheck.push_back(*it);
+				continue;
+			}
 
 			// write to webpage
-			it->print(strRead);
+			clients[*it].print(strRead, NEED_BOLD);
+			//clients[*it].print(strRead, IS_LOG | NEED_NEWLINE);
 
 			// only write when prompt is read
 			if (strRead.find("% ") != string::npos) {
 
 				// finish reading, write next time.
-				it->setSockStatus(WRITING);
+				clients[*it].setSockStatus(WRITING);
 
 				// remove from read fd & put in write fd
-				WSAAsyncSelect(it->getSockFd(), hwnd, WM_SOCKET_NOTIFY, FD_CLOSE | FD_WRITE);
-				it->setCanRead(false);
+				WSAAsyncSelect(clients[*it].getSockFd(), hwnd, WM_SERVER_NOTIFY, FD_CLOSE | FD_WRITE);
+				clients[*it].setCanRead(false);
 
-			} else if (it->hasSentExit()) {
+				// if now can write, write now
+				if (clients[*it].getCanWrite()) {
+					toCheck.push_back(*it);
+					continue;
+				}
+
+			} else if (clients[*it].hasSentExit()) {
 
 				// if the client is ready to exit
 				// remove from read fd and set status to F_DONE
-				WSAAsyncSelect(it->getSockFd(), hwnd, WM_SOCKET_NOTIFY, FD_CLOSE);
+				WSAAsyncSelect(clients[*it].getSockFd(), hwnd, WM_SERVER_NOTIFY, FD_CLOSE);
 
-				it->setSockStatus(DONE);
+				clients[*it].setSockStatus(DONE);
 			}
 
-		} else if (it->getSockStatus() == WRITING && it->getCanWrite() == true) {
+		} else if (clients[*it].getSockStatus() == WRITING && clients[*it].getCanWrite() == true) {
 
 			// get input from file
 			string input;
-			getline(it->getFile(), input);
+			getline(clients[*it].getFile(), input);
 			input += "\n";  // indicate EOL
 
 			// if exit is sent, exit after next write
 			if (input.find("exit") == 0) {
-				it->setExitStatus(true);
+				clients[*it].setExitStatus(true);
 			}
 
 			// write to webpage
-			it->print(input);
+			clients[*it].print(input);
+			//clients[*it].print(input, IS_LOG | NEED_NEWLINE);  // log
 
 			// write to server
-			writeWrapper(it->getSockFd(), input.c_str(), input.size());
+			writeWrapper(clients[*it].getSockFd(), input.c_str(), input.size());
 
 			// finish writing, read next time.
-			it->setSockStatus(READING);
+			clients[*it].setSockStatus(READING);
 
 			// remove from write fd & put in read fd
-			WSAAsyncSelect(it->getSockFd(), hwnd, WM_SOCKET_NOTIFY, FD_CLOSE | FD_READ);
+			WSAAsyncSelect(clients[*it].getSockFd(), hwnd, WM_SERVER_NOTIFY, FD_CLOSE | FD_READ);
+
+			clients[*it].setCanWrite(false);
 		}
 
 	}
@@ -573,24 +722,28 @@ void NP::log(const char* ch, bool error, bool newline, bool prefix) {
 
 	if (error && prefix) {
 		EditPrintf(hwndEdit, TEXT("ERROR: "));
+		output << "ERROR: ";
 	} else if (prefix) {
 		EditPrintf(hwndEdit, TEXT("LOG: "));
+		output << "LOG: ";
 	}
 
 	EditPrintf(hwndEdit, TEXT("%s"), ch);
+	output << ch;
 
 	if (newline) {
 		EditPrintf(hwndEdit, TEXT("\r\n"));
+		output << "\n";
 	}
 
-	fflush(stdout);
+	output.flush();
 }
 
 void NP::err(string str) {
 
 	log(str.c_str(), true);
 	perror(str.c_str());
-	exit(1);
+	//sexit(1);
 }
 
 /**
@@ -616,12 +769,12 @@ char* NP::readWrapper(int sockfd) {
 	int n = recv(sockfd, buffer, sizeof(buffer), 0);
 	if (n < 0) {
 
-		NP::err("read error");
+//		NP::err("read error");
+		return "";
 
-	}
-	else if (n == 0) {
+	} else if (n == 0) {
 
-		return NULL;
+		return "";
 	}
 
 #ifdef DEBUG
@@ -647,20 +800,13 @@ void NP::writeWrapper(int sockfd, const char buffer[], size_t size, bool flag) {
 	}
 }
 
-void NP::requestHandler(int sockfd) {
-
-	/**
-	*  Read HTTP request
-	*/
-	NP::readWrapper(sockfd);
-	char req[MAX_SIZE];
-	strcpy(req, buffer);
+void NP::requestHandler(int sockfd, char req[MAX_SIZE], HWND hwnd) {
 
 	// GET / HTTP/1.1
 	char* method = strtok(req, " ");
 	char* pathAndParam = strtok(NULL, " ");
 
-	char* paramFromGet = strchr(pathAndParam, '?');    // param mat be null
+	char* paramFromGet = strchr(pathAndParam, '?');    // param may be null
 	if (paramFromGet != NULL) {
 		paramFromGet++; // get the next character from '?'
 	}
@@ -687,7 +833,7 @@ void NP::requestHandler(int sockfd) {
 		NP::log("this is hw3.cgi");
 
 		sendHeader(sockfd, 200, "OK", getMimeType(ext));
-		CGI::handler(sockfd, paramFromGet);
+		CGI::handler(sockfd, paramFromGet, hwnd);
 		return;
 	}
 
@@ -817,42 +963,19 @@ const char* NP::getMimeType(char* name) {
 void NP::cleanup(SOCKET sockfd) {
 
 	closesocket(sockfd);
-
-	if (Socks.size() == 0) {
-		return;
-	}
-
-	// remove sockinfo
-	for (list<NP::SockInfo>::iterator it = Socks.begin(); Socks.size() && it != Socks.end();) {
-
-		if (it->getSockFd() == sockfd) {
-			
-			it = Socks.erase(it);
-		
-		} else {
-		
-			it++;
-		}
-	}
 }
 
 NP::SockInfo& NP::findSockInfoBySockfd(SOCKET sockfd) {
 
-	if (Socks.size() == 0) {
-		return SockInfo();
-	}
-
-	// remove sockinfo
-	for (list<NP::SockInfo>::iterator it = Socks.begin(); Socks.size() && it != Socks.end(); it++) {
+	for (vector<NP::SockInfo>::iterator it = clients.begin(); clients.size() && it != clients.end(); it++) {
 
 		if (it->getSockFd() == sockfd) {
 			return *it;
 		}
 
-		if (!Socks.size()) {
-			break;
-		}
 	}
+
+	return SockInfo();
 }
 
 void NP::SockInfo::print(string msg, int flag) {
@@ -860,17 +983,21 @@ void NP::SockInfo::print(string msg, int flag) {
 }
 
 void NP::print(string domId, string msg, int flag) {
+	
+	string toSend = "";
 
 	if (flag & IS_LOG) {
 		time(&now);
 		log("<script>document.all['log'].innerHTML += \"[" + domId + ", " + to_string(difftime(now, start)) + "s] )");
-	}
-	else {
+		toSend += ("<script>document.all['log'].innerHTML += \"[" + domId + ", " + to_string(difftime(now, start)) + "s] )");
+	} else {
 		log("<script>document.all['" + domId + "'].innerHTML += \"");
+		toSend += ("<script>document.all['" + domId + "'].innerHTML += \"");
 	}
 
 	if (flag & IS_ERROR) {
 		log("<span style=\'color: red; font-weight:700;\'>ERROR:</span> ");
+		toSend += ("<span style=\'color: red; font-weight:700;\'>ERROR:</span> ");
 	}
 
 	/**
@@ -934,12 +1061,21 @@ void NP::print(string domId, string msg, int flag) {
 		found = msg.find("\r");
 	}
 
+	if (flag & NEED_BOLD) {
+		msg = "<b>" + msg + "</b>";
+	}
+
 	log(msg);
+	toSend += msg;
 
 	if (flag & NEED_NEWLINE) {
 		log("<br/>");
+		toSend += "<br/>";
 	}
 
 	log("\";</script>\n");
+	toSend += ("\";</script>\n");
+
+	writeWrapper(ssock, toSend.c_str(), toSend.length());
 }
 
