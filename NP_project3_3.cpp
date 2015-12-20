@@ -17,7 +17,9 @@ using namespace std;
 #define WM_SERVER_NOTIFY (WM_USER + 2)
 
 // NP
-#define DEBUG 1
+#ifdef DEBUG
+	#undef DEBUG
+#endif
 
 #define MAX_SIZE 15001
 #define INET_ADDRSTRLEN 16
@@ -439,11 +441,11 @@ BOOL CALLBACK MainDlgProc(HWND hwnd, UINT Message, WPARAM wParam, LPARAM lParam)
 			case FD_CLOSE:
 				EditPrintf(hwndEdit, TEXT("=== WM_SERVER_NOTIFY Sock #%d FD_CLOSE (%d/%d) ===\r\n"), curSockfd, NP::CGI::doneMachines, NP::CGI::numberOfMachines);
 				
-				char str[15000];
+				/*char str[15000];
 				sprintf(str, "=== WM_SERVER_NOTIFY Sock #%d FD_CLOSE (%d/%d) ===\n", curSockfd, NP::CGI::doneMachines, NP::CGI::numberOfMachines);
 				output << str;
 				output.flush();
-
+				*/
 				if (NP::findSockInfoBySockfd(curSockfd).getIsDone()) {
 					return true;
 				}
@@ -675,16 +677,17 @@ void NP::afterSelect(HWND hwnd) {
 		
 		EditPrintf(hwndEdit, TEXT("This is id %d, status = %d, canRead = %d, canWrite = %d\r\n"), *it, clients[*it].getSockStatus(), clients[*it].getCanRead(), clients[*it].getCanWrite());
 		
-		char str[15000];
+		/*char str[15000];
 		sprintf(str, "This is id %d, status = %d, canRead = %d, canWrite = %d\n", *it, clients[*it].getSockStatus(), clients[*it].getCanRead(), clients[*it].getCanWrite());
 		output << str;
 		output.flush();
-
+		*/
 		if (clients[*it].getSockStatus() == READING && clients[*it].getCanRead() == true) {
 
 			string strRead = readWrapper(clients[*it].getSockFd());
 
 			if (strRead.length() == 0) {
+				// dont check this server immediately to avoid being stuck
 				//toCheck.push_back(*it);
 				continue;
 			}
@@ -756,6 +759,10 @@ void NP::log(string ch, bool error, bool newline, bool prefix) {
 
 void NP::log(const char* ch, bool error, bool newline, bool prefix) {
 
+#ifndef DEBUG
+    return;
+#endif
+    
 	if (error && prefix) {
 		EditPrintf(hwndEdit, TEXT("ERROR: "));
 		output << "ERROR: ";
