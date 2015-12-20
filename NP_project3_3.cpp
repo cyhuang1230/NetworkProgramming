@@ -345,12 +345,19 @@ BOOL CALLBACK MainDlgProc(HWND hwnd, UINT Message, WPARAM wParam, LPARAM lParam)
 			switch( WSAGETSELECTEVENT(lParam) )
 			{
 				case FD_ACCEPT:
+				{
 					EditPrintf(hwndEdit, TEXT("=== Sock #%d FD_ACCEPT ===\r\n"), curSockfd);
 
-					ssock = accept(msock, NULL, NULL);
+					SOCKET temp = accept(msock, NULL, NULL);
+					if (websock != NULL && !websock->getIsDone()) {
+						break;
+					}
+
+					ssock = temp;
 					websock = new NP::SockInfo(ssock);
 					EditPrintf(hwndEdit, TEXT("=== Accept one new client(%d) ===\r\n"), ssock);
 					break;
+				}
 
 				case FD_READ:
 				{
@@ -458,7 +465,8 @@ BOOL CALLBACK MainDlgProc(HWND hwnd, UINT Message, WPARAM wParam, LPARAM lParam)
 				NP::CGI::doneMachines++;
 				if (NP::CGI::doneMachines == NP::CGI::numberOfMachines) {
 					NP::CGI::printFooter(websock->getSockFd());
-					cleanup(websock->getSockFd());
+					closesocket(websock->getSockFd());
+					websock->setIsDone(true);
 				}
 				
 				break;
@@ -937,6 +945,8 @@ void NP::requestHandler(int sockfd, char req[MAX_SIZE], HWND hwnd) {
 		CloseHandle(hFile);
 	} 
 	
+	closesocket(sockfd);
+	websock->setIsDone(true);
 }
 
 /**
@@ -1006,7 +1016,6 @@ const char* NP::getMimeType(char* name) {
 void NP::cleanup(SOCKET sockfd) {
 
 	closesocket(sockfd);
-	WSACleanup();
 }
 
 NP::SockInfo& NP::findSockInfoBySockfd(SOCKET sockfd) {
