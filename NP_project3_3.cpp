@@ -18,7 +18,7 @@ using namespace std;
 
 // NP
 #ifdef DEBUG
-	#undef DEBUG
+	//#undef DEBUG
 #endif
 
 #define MAX_SIZE 15001
@@ -33,7 +33,7 @@ using namespace std;
 
 // for log flag
 #define IS_LOG (1 << 0)
-#define IS_ERROR (1 << 1)
+#define NP_IS_ERROR (1 << 1)
 #define NEED_NEWLINE (1 << 2)
 #define NEED_BOLD (1<<3)
 
@@ -68,7 +68,7 @@ namespace NP {
 		char ip[INET_ADDRSTRLEN];
 		char port[6];
 		char filename[FILENAME_LENGTH];
-		string domId;
+		int domId;
 		ifstream file;
 		bool isDone = false;
 
@@ -84,7 +84,7 @@ namespace NP {
 		SockInfo(int id, const char* iIp, const char* iPort, const char* iFile) {
 
 			socktype = Server;
-			domId = "m" + to_string(id);
+			domId = id;
 			strncpy(ip, iIp, INET_ADDRSTRLEN);
 			strncpy(port, iPort, 6);
 			strncpy(filename, iFile, FILENAME_LENGTH);
@@ -106,6 +106,10 @@ namespace NP {
 		}
 
 		string getDomId() {
+			return "m" + to_string(domId);
+		}
+
+		int getDomIdInInt() {
 			return domId;
 		}
 
@@ -169,7 +173,7 @@ namespace NP {
 			sentExit = status;
 		}
 
-		bool connectServer(HWND hwnd);
+		bool connectServer(HWND& hwnd);
 
 		void print(string msg, int flag = 0);
 	};
@@ -219,21 +223,21 @@ namespace NP {
 
 	const char* getMimeType(char* name);
 
-	void cleanup(SOCKET sockfd);
+	void cleanupWebsock();
 
-	void afterSelect(HWND hwnd);
+	void afterSelect(HWND& hwnd);
 
 	namespace CGI {
 
 		int numberOfMachines = 0, doneMachines = 0;
 
-		void handler(int sockfd, char* param, HWND hwnd);
+		void handler(int sockfd, char* param, HWND& hwnd);
 
 		void printHeader(int sockfd);
 
-		void printBody(int sockfd);
+		void printBody(int sockfd, char* param);
 
-		bool connectServers(HWND hwnd);
+		bool connectServers(HWND& hwnd);
 
 		void printFooter(int sockfd);
 	}
@@ -241,6 +245,7 @@ namespace NP {
 }
 
 using namespace NP;
+
 NP::SockInfo* websock;
 vector<NP::SockInfo> clients;
 char buffer[MAX_SIZE];
@@ -249,28 +254,26 @@ SOCKET ssock;
 ofstream output;
 BOOL CALLBACK MainDlgProc(HWND, UINT, WPARAM, LPARAM);
 int EditPrintf(HWND, TCHAR *, ...);
-static HWND hwndEdit;
+HWND hwndEdit;
+SOCKET msock;
+struct sockaddr_in sa;
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
 	LPSTR lpCmdLine, int nCmdShow)
 {
 	output = ofstream("log.txt", ofstream::out | ofstream::app);
 	output << "--------------------------------------" << endl;
+
 	return DialogBox(hInstance, MAKEINTRESOURCE(ID_MAIN), NULL, MainDlgProc);
 }
 
 BOOL CALLBACK MainDlgProc(HWND hwnd, UINT Message, WPARAM wParam, LPARAM lParam)
 {
 	WSADATA wsaData;
-
-	static SOCKET msock;
-	static struct sockaddr_in sa;
-
 	int err;
 
 	switch(Message) 
 	{
-		EditPrintf(hwndEdit, TEXT("=== message: $d ===\r\n", Message));
 		case WM_INITDIALOG:
 			hwndEdit = GetDlgItem(hwnd, IDC_RESULT);
 			break;
@@ -283,19 +286,16 @@ BOOL CALLBACK MainDlgProc(HWND hwnd, UINT Message, WPARAM wParam, LPARAM lParam)
 
 					//create master socket
 					msock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-
 					if( msock == INVALID_SOCKET ) {
 						EditPrintf(hwndEdit, TEXT("=== Error: create socket error ===\r\n"));
-						WSACleanup();
 						return TRUE;
 					}
 
 					err = WSAAsyncSelect(msock, hwnd, WM_SOCKET_NOTIFY, FD_ACCEPT | FD_CLOSE | FD_READ | FD_WRITE);
-
 					if ( err == SOCKET_ERROR ) {
 						EditPrintf(hwndEdit, TEXT("=== Error: select error ===\r\n"));
 						closesocket(msock);
-						WSACleanup();
+						//WSACleanup();
 						return TRUE;
 					}
 
@@ -305,19 +305,17 @@ BOOL CALLBACK MainDlgProc(HWND hwnd, UINT Message, WPARAM wParam, LPARAM lParam)
 					sa.sin_addr.s_addr	= INADDR_ANY;
 
 					//bind socket
-					err = bind(msock, (LPSOCKADDR)&sa, sizeof(struct sockaddr));
-
+					err = bind(msock, (LPSOCKADDR)&sa, sizeof(sa));
 					if( err == SOCKET_ERROR ) {
 						EditPrintf(hwndEdit, TEXT("=== Error: binding error ===\r\n"));
-						WSACleanup();
+						//WSACleanup();
 						return FALSE;
 					}
 
-					err = listen(msock, 2);
-		
+					err = listen(msock, SOMAXCONN);
 					if( err == SOCKET_ERROR ) {
 						EditPrintf(hwndEdit, TEXT("=== Error: listen error ===\r\n"));
-						WSACleanup();
+						//WSACleanup();
 						return FALSE;
 					}
 					else {
@@ -347,14 +345,23 @@ BOOL CALLBACK MainDlgProc(HWND hwnd, UINT Message, WPARAM wParam, LPARAM lParam)
 				case FD_ACCEPT:
 				{
 					EditPrintf(hwndEdit, TEXT("=== Sock #%d FD_ACCEPT ===\r\n"), curSockfd);
+					WSAStartup(MAKEWORD(2, 0), &wsaData);
 
 					SOCKET temp = accept(msock, NULL, NULL);
 					if (websock != NULL && !websock->getIsDone()) {
+						if (ssock != temp) {
+							closesocket(temp);
+						}
 						break;
 					}
 
 					ssock = temp;
 					websock = new NP::SockInfo(ssock);
+					WSAAsyncSelect(ssock, hwnd, WM_SOCKET_NOTIFY, FD_ACCEPT | FD_CLOSE | FD_READ | FD_WRITE);
+
+					NP::CGI::numberOfMachines = 0;
+					NP::CGI::doneMachines = 0;
+
 					EditPrintf(hwndEdit, TEXT("=== Accept one new client(%d) ===\r\n"), ssock);
 					break;
 				}
@@ -420,6 +427,13 @@ BOOL CALLBACK MainDlgProc(HWND hwnd, UINT Message, WPARAM wParam, LPARAM lParam)
 				if (getsockopt(curSockfd, SOL_SOCKET, SO_ERROR, (char*)&error, &error_len) == SOCKET_ERROR ||
 					error != 0) {
 					EditPrintf(hwndEdit, TEXT("=== Error: connect error %x (in FD_CONNECT) ===\r\n", WSAGetLastError()));
+					NP::print("ALL", "Socket `" + to_string(curSockfd) + "` connect error.", IS_LOG | NP_IS_ERROR | NEED_NEWLINE);
+					NP::CGI::doneMachines++;
+
+					if (NP::CGI::doneMachines == NP::CGI::numberOfMachines) {
+						NP::cleanupWebsock();
+						clients.clear();
+					}
 					break;
 				}
 
@@ -465,8 +479,8 @@ BOOL CALLBACK MainDlgProc(HWND hwnd, UINT Message, WPARAM wParam, LPARAM lParam)
 				NP::CGI::doneMachines++;
 				if (NP::CGI::doneMachines == NP::CGI::numberOfMachines) {
 					NP::CGI::printFooter(websock->getSockFd());
-					closesocket(websock->getSockFd());
-					websock->setIsDone(true);
+					NP::cleanupWebsock();
+					clients.clear();
 				}
 				
 				break;
@@ -508,13 +522,13 @@ using namespace NP;
 using namespace NP::CGI;
 
 // CGI
-void NP::CGI::handler(int sockfd, char* param, HWND hwnd) {
+void NP::CGI::handler(int sockfd, char* param, HWND& hwnd) {
 
 	time(&start);
 
 	printHeader(sockfd);
 
-	printBody(sockfd);
+	printBody(sockfd, param);
 
 	connectServers(hwnd);
 
@@ -544,9 +558,9 @@ void NP::CGI::printFooter(int sockfd) {
 	writeWrapper(sockfd, footer, strlen(footer));
 }
 
-void NP::CGI::printBody(int sockfd) {
+void NP::CGI::printBody(int sockfd, char* param) {
 	//    setenv("QUERY_STRING", "h1=127.0.0.1&p1=4414&f1=t5.txt&h2=127.0.0.1&p2=4413&f2=t6.txt&h3=127.0.0.1&p3=4415&f3=t7.txt&h4=127.0.0.1&p4=4410&f4=t4.txt&h5=127.0.0.1&p5=4410&f5=t1.txt", 1);
-	char* data = getenv("QUERY_STRING");
+	char* data = param;
 	char ip[CLIENT_MAX_NUMBER][INET_ADDRSTRLEN];
 	char port[CLIENT_MAX_NUMBER][6];
 	char file[CLIENT_MAX_NUMBER][FILENAME_LENGTH];
@@ -608,12 +622,12 @@ void NP::CGI::printBody(int sockfd) {
 	writeWrapper(sockfd, afterTableData, strlen(afterTableData));
 }
 
-bool NP::CGI::connectServers(HWND hwnd) {
+bool NP::CGI::connectServers(HWND& hwnd) {
 
 	for (int i = 0; i < numberOfMachines; i++) {
 		if (!(clients[i].connectServer(hwnd))) {
-			print("ALL", "Client `" + clients[i].getDomId() + "` encounters error. Stop program.", IS_LOG | IS_ERROR | NEED_NEWLINE);
-			EditPrintf(hwndEdit, TEXT("Client `%s` encounters error. Stop program.\r\n", clients[i].getDomId()));
+			print("ALL", "Client `" + clients[i].getDomId() + "` encounters error. Stop program.", IS_LOG | NP_IS_ERROR | NEED_NEWLINE);
+			EditPrintf(hwndEdit, TEXT("Client `%d` encounters error. Stop program.\r\n", clients[i].getDomIdInInt()));
 			return false;
 		}
 		// print intro
@@ -624,10 +638,7 @@ bool NP::CGI::connectServers(HWND hwnd) {
 	return true;
 }
 
-bool NP::SockInfo::connectServer(HWND hwnd) {
-
-	WSADATA wsaData;
-	WSAStartup(MAKEWORD(2, 0), &wsaData);
+bool NP::SockInfo::connectServer(HWND& hwnd) {
 
 	SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 	if (sock == INVALID_SOCKET) {
@@ -638,40 +649,37 @@ bool NP::SockInfo::connectServer(HWND hwnd) {
 
 	this->sockfd = sock;
 
-	if (WSAAsyncSelect(sock, hwnd, WM_SERVER_NOTIFY, FD_CONNECT | FD_ACCEPT | FD_READ | FD_WRITE | FD_CLOSE) == SOCKET_ERROR) {
+	if (WSAAsyncSelect(sock, hwnd, WM_SERVER_NOTIFY, FD_CONNECT | FD_CLOSE) == SOCKET_ERROR) {
 
-		EditPrintf(hwndEdit, TEXT("=== Error: set select on FD_CONNECT error (%d) ===\r\n", WSAGetLastError()));
-		closesocket(sock);
-		WSACleanup();
-		return false;
-	}
-
-	// Resolve IP address for hostname
-	struct hostent *host;
-	if ((host = gethostbyname(this->ip)) == NULL)
-	{
-		EditPrintf(hwndEdit, TEXT("=== Error: gethostbyname error ===\r\n"));
+		EditPrintf(hwndEdit, TEXT("=== Error: set select on FD_CONNECT error (%ld) ===\r\n", WSAGetLastError()));
 		return false;
 	}
 
 	// Set up our socket address structure
-	SOCKADDR_IN res;
+	sockaddr_in res;
 	res.sin_port = htons(atoi(this->port));
 	res.sin_family = AF_INET;
-	res.sin_addr.s_addr = *((unsigned long*)host->h_addr);
+	res.sin_addr.s_addr = inet_addr(this->ip);
+
+	/*int err = bind(sock, (SOCKADDR *)&res, sizeof(res));
+	if (err == SOCKET_ERROR) {
+		EditPrintf(hwndEdit, TEXT("=== Error: binding error %ld ===\r\n", WSAGetLastError()));
+		//WSACleanup();
+		return FALSE;
+	}*/
 
 	if (connect(sock, (LPSOCKADDR)(&res), sizeof(res)) == SOCKET_ERROR && WSAGetLastError() != WSAEWOULDBLOCK) {
-		EditPrintf(hwndEdit, TEXT("=== Error: connect error %d ===\r\n", WSAGetLastError()));
+		EditPrintf(hwndEdit, TEXT("=== Error: connect error %ld ===\r\n", WSAGetLastError()));
 		return false;
 	}
 
 	return true;
 }
 
-void NP::afterSelect(HWND hwnd) {
+void NP::afterSelect(HWND& hwnd) {
 
 	list<int> toCheck;
-	for (int i = 0; i < numberOfMachines; i++) {
+	for (int i = 0; i < clients.size(); i++) {
 		if (!clients[i].getIsDone()) {
 			toCheck.push_back(i);
 		}
@@ -794,7 +802,7 @@ void NP::err(string str) {
 
 	log(str.c_str(), true);
 	perror(str.c_str());
-	//sexit(1);
+	//exit(1);
 }
 
 /**
@@ -846,8 +854,8 @@ void NP::writeWrapper(int sockfd, const char buffer[], size_t size, bool flag) {
 	NP::log("write(size = " + to_string(size) + ", n = " + to_string(n) + ", via fd " + to_string(sockfd) + "): \n" + string(buffer));
 #endif
 
-	if (n < 0) {
-		NP::err("write error: " + string(buffer));
+	if (n == SOCKET_ERROR) {
+		NP::err("write error[" + to_string(WSAGetLastError()) + "]: " + string(buffer));
 	}
 }
 
@@ -918,8 +926,6 @@ void NP::requestHandler(int sockfd, char req[MAX_SIZE], HWND hwnd) {
 	*/
 	sendHeader(sockfd, 200, "OK", getMimeType(ext));
 
-	NP::log("after header is sent");
-
 	/**
 	*  Read file
 	*/
@@ -945,8 +951,7 @@ void NP::requestHandler(int sockfd, char req[MAX_SIZE], HWND hwnd) {
 		CloseHandle(hFile);
 	} 
 	
-	closesocket(sockfd);
-	websock->setIsDone(true);
+	cleanupWebsock();
 }
 
 /**
@@ -1013,9 +1018,19 @@ const char* NP::getMimeType(char* name) {
 	return NULL;
 }
 
-void NP::cleanup(SOCKET sockfd) {
+void NP::cleanupWebsock() {
 
-	closesocket(sockfd);
+	if (websock == NULL) {
+		return;
+	}
+
+	int iResult = closesocket(websock->getSockFd());
+	if (iResult == SOCKET_ERROR) {
+		wprintf(L"closesocket failed with error = %ld\n", WSAGetLastError());
+	}
+	websock->setIsDone(true);
+	delete websock;
+	WSACleanup();
 }
 
 NP::SockInfo& NP::findSockInfoBySockfd(SOCKET sockfd) {
@@ -1032,7 +1047,7 @@ NP::SockInfo& NP::findSockInfoBySockfd(SOCKET sockfd) {
 }
 
 void NP::SockInfo::print(string msg, int flag) {
-	NP::print(domId, msg, flag);
+	NP::print(getDomId(), msg, flag);
 }
 
 void NP::print(string domId, string msg, int flag) {
@@ -1041,14 +1056,14 @@ void NP::print(string domId, string msg, int flag) {
 
 	if (flag & IS_LOG) {
 		time(&now);
-		log("<script>document.all['log'].innerHTML += \"[" + domId + ", " + to_string(difftime(now, start)) + "s] )");
-		toSend += ("<script>document.all['log'].innerHTML += \"[" + domId + ", " + to_string(difftime(now, start)) + "s] )");
+		log("<script>document.all['log'].innerHTML += \"[" + domId + ", " + to_string(difftime(now, start)) + "s] ");
+		toSend += ("<script>document.all['log'].innerHTML += \"[" + domId + ", " + to_string(difftime(now, start)) + "s] ");
 	} else {
 		log("<script>document.all['" + domId + "'].innerHTML += \"");
 		toSend += ("<script>document.all['" + domId + "'].innerHTML += \"");
 	}
 
-	if (flag & IS_ERROR) {
+	if (flag & NP_IS_ERROR) {
 		log("<span style=\'color: red; font-weight:700;\'>ERROR:</span> ");
 		toSend += ("<span style=\'color: red; font-weight:700;\'>ERROR:</span> ");
 	}
