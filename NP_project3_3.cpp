@@ -21,6 +21,10 @@ using namespace std;
 	//#undef DEBUG
 #endif
 
+#ifndef UNICODE
+#define UNICODE
+#endif
+
 #define MAX_SIZE 15001
 #define INET_ADDRSTRLEN 16
 #define FILENAME_LENGTH 100
@@ -231,11 +235,11 @@ namespace NP {
 
 		int numberOfMachines = 0, doneMachines = 0;
 
-		void handler(int sockfd, char* param, HWND& hwnd);
+		void handler(int sockfd, HWND& hwnd);
 
 		void printHeader(int sockfd);
 
-		void printBody(int sockfd, char* param);
+		void printBody(int sockfd);
 
 		bool connectServers(HWND& hwnd);
 
@@ -522,13 +526,13 @@ using namespace NP;
 using namespace NP::CGI;
 
 // CGI
-void NP::CGI::handler(int sockfd, char* param, HWND& hwnd) {
+void NP::CGI::handler(int sockfd, HWND& hwnd) {
 
 	time(&start);
 
 	printHeader(sockfd);
 
-	printBody(sockfd, param);
+	printBody(sockfd);
 
 	connectServers(hwnd);
 
@@ -558,9 +562,9 @@ void NP::CGI::printFooter(int sockfd) {
 	writeWrapper(sockfd, footer, strlen(footer));
 }
 
-void NP::CGI::printBody(int sockfd, char* param) {
+void NP::CGI::printBody(int sockfd) {
 	//    setenv("QUERY_STRING", "h1=127.0.0.1&p1=4414&f1=t5.txt&h2=127.0.0.1&p2=4413&f2=t6.txt&h3=127.0.0.1&p3=4415&f3=t7.txt&h4=127.0.0.1&p4=4410&f4=t4.txt&h5=127.0.0.1&p5=4410&f5=t1.txt", 1);
-	char* data = param;
+	char* data = getenv("QUERY_STRING");
 	char ip[CLIENT_MAX_NUMBER][INET_ADDRSTRLEN];
 	char port[CLIENT_MAX_NUMBER][6];
 	char file[CLIENT_MAX_NUMBER][FILENAME_LENGTH];
@@ -883,7 +887,7 @@ void NP::requestHandler(int sockfd, char req[MAX_SIZE], HWND hwnd) {
 
 	// handle GET param
 	if (paramFromGet != NULL) {
-		//_putenv_s("QUERY_STRING", paramFromGet);
+		_putenv_s("QUERY_STRING", paramFromGet);
 	}
 
 	// if hw3.cgi i.e. path = "hw3.cgi"
@@ -892,7 +896,7 @@ void NP::requestHandler(int sockfd, char req[MAX_SIZE], HWND hwnd) {
 		NP::log("this is hw3.cgi");
 
 		sendHeader(sockfd, 200, "OK", getMimeType(ext));
-		CGI::handler(sockfd, paramFromGet, hwnd);
+		CGI::handler(sockfd, hwnd);
 		return;
 	}
 
@@ -936,9 +940,12 @@ void NP::requestHandler(int sockfd, char req[MAX_SIZE], HWND hwnd) {
 		// read file content and write to web
 		HANDLE hFile = CreateFile(path, GENERIC_READ, FILE_SHARE_READ, NULL, 
 			OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED, NULL);
-		OVERLAPPED ol = { 0 };
-
-		if (FALSE == ReadFileEx(hFile, buffer, sizeof(buffer), &ol, NULL))
+		DWORD nBytesToRead = MAX_SIZE;
+		DWORD dwBytesRead = 0;
+		DWORD dwFileSize = GetFileSize(hFile, NULL);
+		OVERLAPPED stOverlapped = { 0 };
+		
+		if (FALSE == ReadFile(hFile, buffer, nBytesToRead, &dwBytesRead, &stOverlapped))
 		{
 
 			log("Terminal failure: Unable to read from file.\n GetLastError=%08x\n", GetLastError());
@@ -946,11 +953,11 @@ void NP::requestHandler(int sockfd, char req[MAX_SIZE], HWND hwnd) {
 			return;
 		}
 
-		writeWrapper(sockfd, buffer, strlen(buffer), BUFFER_DONT_RESET);
+		writeWrapper(sockfd, buffer, dwBytesRead, BUFFER_DONT_RESET);
 
 		CloseHandle(hFile);
 	} 
-	
+
 	cleanupWebsock();
 }
 
@@ -993,6 +1000,7 @@ void NP::generateErrorPage(int sockfd, int status, const char* title) {
 	sprintf(body, "<html><title>%d %s</title>", status, title);
 	sprintf(body + strlen(body), "<body><h1>%d %s</h1></body></html>", status, title);
 	writeWrapper(sockfd, body, strlen(body));
+	cleanupWebsock();
 }
 
 const char* NP::getMimeType(char* name) {
