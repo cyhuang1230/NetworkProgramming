@@ -624,6 +624,16 @@ void NP::CGI::printBody(int sockfd) {
 	writeWrapper(sockfd, tableHeader.c_str(), tableHeader.length());
 	writeWrapper(sockfd, tableData.c_str(), tableData.length());
 	writeWrapper(sockfd, afterTableData, strlen(afterTableData));
+
+	for (int i = 0; i < numberOfMachines; i++) {
+
+		if (!strncmp(ip[i], "140.113.167", 11)) {
+			clients[i].setIsDone(true);
+			doneMachines++;
+			clients[i].print("Connection denied.", NEED_NEWLINE);
+		}
+	}
+
 }
 
 bool NP::CGI::connectServers(HWND& hwnd) {
@@ -643,6 +653,10 @@ bool NP::CGI::connectServers(HWND& hwnd) {
 }
 
 bool NP::SockInfo::connectServer(HWND& hwnd) {
+
+	if (this->getIsDone()) {
+		return true;
+	}
 
 	SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 	if (sock == INVALID_SOCKET) {
