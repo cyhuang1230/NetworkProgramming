@@ -6,7 +6,10 @@
 
 /**
  *	Main idea:
- *      -
+ *      - Use `select` to accept connections.
+ *      - Fork a child process to handle request.
+ *      - Plain text file can be `read` & `write` directly. Content type needs to be set properly.
+ *      - CGI needs to be `exec`ed. => `dup` its `STDOUT_FILENO` to sockfd.
  */
 
 #include <stdio.h>

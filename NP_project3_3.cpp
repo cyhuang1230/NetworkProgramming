@@ -1,3 +1,18 @@
+//  NCTU CS. Network Programming Assignment 3 Part III
+//  CGI. Please refer to hw3spec.txt for more details.
+
+//  Code by Denny Chien-Yu Huang, 10/25/15.
+//  Github: http://cyhuang1230.github.io/
+
+/**
+ *	Main idea:
+ *      - Same logic as `Berkeley Socket` version.
+ *      - To read file, use `ReadFile` instead of `ReadFileEx` (I encountered pointer error)
+ *      - Keep track of `doneMachines`. When done (`== numberOfMachines`), close socket and print footer.
+ *      - I like `Berkeley Socket` much more than `Winsock`.
+ */
+
+
 #include <windows.h>
 #include <list>
 #include "atlstr.h"
@@ -17,9 +32,6 @@ using namespace std;
 #define WM_SERVER_NOTIFY (WM_USER + 2)
 
 // NP
-#ifdef DEBUG
-	//#undef DEBUG
-#endif
 
 #ifndef UNICODE
 #define UNICODE
@@ -341,9 +353,6 @@ BOOL CALLBACK MainDlgProc(HWND hwnd, UINT Message, WPARAM wParam, LPARAM lParam)
 		case WM_SOCKET_NOTIFY:
 		{
 			SOCKET curSockfd = wParam;
-//			if (WSAGETSELECTERROR(lParam))
-	//			EditPrintf(hwndEdit, TEXT("=== WM_SOCKET_NOTIFY: WSAGETSELECTERROR %d ===\r\n"), WSAGETSELECTERROR(lParam));
-
 			switch( WSAGETSELECTEVENT(lParam) )
 			{
 				case FD_ACCEPT:
@@ -466,11 +475,6 @@ BOOL CALLBACK MainDlgProc(HWND hwnd, UINT Message, WPARAM wParam, LPARAM lParam)
 			case FD_CLOSE:
 				EditPrintf(hwndEdit, TEXT("=== WM_SERVER_NOTIFY Sock #%d FD_CLOSE (%d/%d) ===\r\n"), curSockfd, NP::CGI::doneMachines, NP::CGI::numberOfMachines);
 				
-				/*char str[15000];
-				sprintf(str, "=== WM_SERVER_NOTIFY Sock #%d FD_CLOSE (%d/%d) ===\n", curSockfd, NP::CGI::doneMachines, NP::CGI::numberOfMachines);
-				output << str;
-				output.flush();
-				*/
 				if (NP::findSockInfoBySockfd(curSockfd).getIsDone()) {
 					return true;
 				}
@@ -644,8 +648,6 @@ bool NP::CGI::connectServers(HWND& hwnd) {
 			EditPrintf(hwndEdit, TEXT("Client `%d` encounters error. Stop program.\r\n", clients[i].getDomIdInInt()));
 			return false;
 		}
-		// print intro
-//		clients[i].print("Client id #" + to_string(i) + ": sockfd: " + to_string(clients[i].getSockFd()), IS_LOG | NEED_NEWLINE);
 	}
 
 	EditPrintf(hwndEdit, TEXT("ConnectServers completed.\r\n"));
@@ -679,13 +681,6 @@ bool NP::SockInfo::connectServer(HWND& hwnd) {
 	res.sin_family = AF_INET;
 	res.sin_addr.s_addr = inet_addr(this->ip);
 
-	/*int err = bind(sock, (SOCKADDR *)&res, sizeof(res));
-	if (err == SOCKET_ERROR) {
-		EditPrintf(hwndEdit, TEXT("=== Error: binding error %ld ===\r\n", WSAGetLastError()));
-		//WSACleanup();
-		return FALSE;
-	}*/
-
 	if (connect(sock, (LPSOCKADDR)(&res), sizeof(res)) == SOCKET_ERROR && WSAGetLastError() != WSAEWOULDBLOCK) {
 		EditPrintf(hwndEdit, TEXT("=== Error: connect error %ld ===\r\n", WSAGetLastError()));
 		return false;
@@ -711,11 +706,6 @@ void NP::afterSelect(HWND& hwnd) {
 		
 		EditPrintf(hwndEdit, TEXT("This is id %d, status = %d, canRead = %d, canWrite = %d\r\n"), *it, clients[*it].getSockStatus(), clients[*it].getCanRead(), clients[*it].getCanWrite());
 		
-		/*char str[15000];
-		sprintf(str, "This is id %d, status = %d, canRead = %d, canWrite = %d\n", *it, clients[*it].getSockStatus(), clients[*it].getCanRead(), clients[*it].getCanWrite());
-		output << str;
-		output.flush();
-		*/
 		if (clients[*it].getSockStatus() == READING && clients[*it].getCanRead() == true) {
 
 			string strRead = readWrapper(clients[*it].getSockFd());

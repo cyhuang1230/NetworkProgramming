@@ -11,7 +11,7 @@
  *      - Since we're client now, doesn't matter which port to use, i.e. no need to `bind` anymore!
  *      - Try using `flag`(bitwise comparison) instead of individually specifying each property in `log` function.
  *      - Output recerived from servers should be handled(e.g. `\n`, `<`, `>`, `&`, `'`, '\"')
- *          since Javascript has different escape characters than C. Also, the order of processing characters matters.
+ *          since JavaScript has different escape characters than C. Also, the order of processing characters matters.
  *      - Most importantly, non-blocking client design.
  *          [1] `connect` may be blocked due to slow connection.
  *              => Set `O_NONBLOCK` to sockfd
