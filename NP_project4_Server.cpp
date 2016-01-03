@@ -614,7 +614,7 @@ void NP::redirectData(int ssock, int rsock) {
     bzero(ssockbuffer, BUFFER_SIZE);
 
     struct timeval timeout;
-    timeout.tv_sec = 60;
+    timeout.tv_sec = 1200;
     int toCheck = 0;
     
     while (1) {
