@@ -39,6 +39,7 @@ using namespace std;
 #define NEED_NEWLINE (1 << 2)
 #define NEED_BOLD (1<<3)
 char buffer[BUFFER_SIZE];
+enum SOCKS_TYPE {CONNECT = 1, BIND, DONTCARE};
 
 namespace NP {
     
@@ -132,8 +133,8 @@ namespace NP {
         
        int n = write(sockfd, buffer, size);
 #ifdef DEBUG
-        NP::log("write(size = " + to_string(size) + ", n = " + to_string(n) + ", via fd " + to_string(sockfd) +")\n");
-//        NP::log("write(size = " + to_string(size) + ", n = " + to_string(n) + ", via fd " + to_string(sockfd) +"): \n" + string(buffer));
+//        NP::log("write(size = " + to_string(size) + ", n = " + to_string(n) + ", via fd " + to_string(sockfd) +")\n");
+        NP::log("write(size = " + to_string(size) + ", n = " + to_string(n) + ", via fd " + to_string(sockfd) +"): \n" + string(buffer));
 #endif
         
         if (n < 0) {
@@ -155,8 +156,8 @@ namespace NP {
         }
         
 #ifdef DEBUG
-        NP::log("read(size = " + to_string(sizeof(buffer)) + ", n = " + to_string(n) + ", via fd " + to_string(sockfd) +")\n");
-//        NP::log("read(size = " + to_string(sizeof(buffer)) + ", n = " + to_string(n) + ", via fd " + to_string(sockfd) +"): \n" + string(buffer));
+//        NP::log("read(size = " + to_string(sizeof(buffer)) + ", n = " + to_string(n) + ", via fd " + to_string(sockfd) +")\n");
+        NP::log("read(size = " + to_string(sizeof(buffer)) + ", n = " + to_string(n) + ", via fd " + to_string(sockfd) +"): \n" + string(buffer));
 #endif
         
         return n;
@@ -197,11 +198,11 @@ namespace NP {
 /// HW4
     void processRequest(int);
 
-    void sendSockResponse(int ssock, bool isGranted, char* sockreq);
+    void sendSockResponse(int ssock, bool isGranted, SOCKS_TYPE type, char* sockreq);
 
     void redirectData(int ssock, int rsock);
 
-    bool isAllowedToConnect(char*);
+    bool isAllowedToConnect(SOCKS_TYPE type, char* ip);
     
     int connectDestHost(char dst_ip[INET_ADDRSTRLEN], unsigned short dst_port);
     
@@ -325,22 +326,22 @@ void NP::processRequest(int ssock) {
     
     NP::readWrapper(ssock);
     
-    char sockreq[262];
-    memcpy(sockreq, buffer, 262);
+    char socksreq[262];
+    memcpy(socksreq, buffer, 262);
 //    for (int i = 0; i < 8; i++) {
 //        printf("sockreq[%d] = %u\n", i, (unsigned char)sockreq[i]);
 //    }
-    int cd = sockreq[1];
+    int cd = socksreq[1];
     unsigned short dst_port;
     char dst_ip[INET_ADDRSTRLEN];
 //    char user_id[MAX_USER_ID_LEN+1];
 //    char domain_name[MAX_DOMAIN_NAME_LEN+1];
     
     // decapsulate the damn port the way it encapsulated
-    dst_port = (unsigned short) ntohs(*(unsigned short*)&sockreq[2]);
-    sprintf(dst_ip, "%u.%u.%u.%u", (unsigned char)sockreq[4], (unsigned char)sockreq[5], (unsigned char)sockreq[6], (unsigned char)sockreq[7]);
+    dst_port = (unsigned short) ntohs(*(unsigned short*)&socksreq[2]);
+    sprintf(dst_ip, "%u.%u.%u.%u", (unsigned char)socksreq[4], (unsigned char)socksreq[5], (unsigned char)socksreq[6], (unsigned char)socksreq[7]);
     
-    sprintf(buffer, "get:\nVN: %d, CD: %d, DST_PORT: %hu, DST_IP: %s\n", sockreq[0], cd, dst_port, dst_ip);
+    sprintf(buffer, "get:\nVN: %d, CD: %d, DST_PORT: %hu, DST_IP: %s\n", socksreq[0], cd, dst_port, dst_ip);
     log(buffer);
     
     // @TODO: user_id, domain_name
@@ -355,37 +356,206 @@ void NP::processRequest(int ssock) {
 //    }
 
     // check firewall rules
-    if (!NP::isAllowedToConnect(dst_ip)) {
-        // @TODO: firewall not allowed
+    if (!NP::isAllowedToConnect((SOCKS_TYPE)cd, dst_ip)) {
+
+        sprintf(buffer, "firewall didnt pass, return\n", dst_ip, dst_port);
+        log(buffer);
+        
+        NP::sendSockResponse(ssock, false, DONTCARE, socksreq);
         return;
     }
     
-    // connect to dest host
-    sprintf(buffer, "firewall passed, connecting to %s:%hu...\n", dst_ip, dst_port);
-    log(buffer);
-    int rsock = -1;
-    if ((rsock = NP::connectDestHost(dst_ip, dst_port)) == -1) {
-        NP::sendSockResponse(ssock, false, sockreq);
-        return;
+    switch (cd) {
+        case CONNECT: // CONNECT
+        {
+            // connect to dest host
+            sprintf(buffer, "[CONNECT] firewall passed, connecting to %s:%hu...\n", dst_ip, dst_port);
+            log(buffer);
+            int rsock = -1;
+            if ((rsock = NP::connectDestHost(dst_ip, dst_port)) == -1) {
+                NP::sendSockResponse(ssock, false, CONNECT, socksreq);
+                return;
+            }
+            
+            // send client response
+            NP::sendSockResponse(ssock, true, CONNECT, socksreq);
+
+            // Redirect data
+            sprintf(buffer, "connected to %s:%hu, redirecting data...\n", dst_ip, dst_port);
+            log(buffer);
+            
+            NP::redirectData(ssock, rsock);
+            
+            sprintf(buffer, "done. Connection to %s:%hu closed.\n", dst_ip, dst_port);
+            log(buffer);
+
+            break;
+        }
+            
+        case BIND: // BIND
+        {
+            sprintf(buffer, "[BIND] firewall passed, connecting to %s:%hu...\n", dst_ip, dst_port);
+
+            // get socket
+            int bindsock = 0;
+            if ((bindsock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+                NP::err("[BIND] Cannot open socket!");
+            }
+            
+            // bind
+            struct sockaddr_in ftpsv_addr, ftpcli_addr;
+            socklen_t ftpcli_len, ftpsv_len;
+            bzero((char*)&ftpsv_addr, sizeof(ftpsv_addr));
+            ftpsv_addr.sin_family = AF_INET;
+            ftpsv_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+            ftpsv_addr.sin_port = 0;
+            
+            if (::bind(bindsock, (struct sockaddr*) &ftpsv_addr, sizeof(ftpsv_addr)) < 0) {
+                NP::err("[BIND] Bind error");
+            }
+            ftpsv_len = sizeof(ftpsv_addr);
+            ::getsockname(bindsock, (struct sockaddr*) &ftpsv_addr, &ftpsv_len);
+            
+            NP::log("[BIND] BIND: to port " + to_string(ftpsv_addr.sin_port));
+            
+            /**
+             *  Listen
+             */
+            listen(bindsock, 30);
+            
+            
+            // send client response
+            *((unsigned short*)&socksreq[2]) = htons(ftpsv_addr.sin_port);
+            socksreq[4] = 0x0;
+            socksreq[5] = 0x0;
+            socksreq[6] = 0x0;
+            socksreq[7] = 0x0;
+            NP::sendSockResponse(ssock, true, BIND, socksreq);
+
+            
+//            while (1) {
+            
+            ftpcli_len = sizeof(ftpcli_addr);
+            int newbindsock = ::accept(bindsock, (struct sockaddr *) &ftpcli_addr, &ftpcli_len);
+            
+            // Redirect data
+            sprintf(buffer, "[BIND] connected to %s:%hu, redirecting data...\n", dst_ip, dst_port);
+            log(buffer);
+            
+            NP::redirectData(ssock, newbindsock);
+            
+            sprintf(buffer, "[BIND] done. Connection to %s:%hu closed.\n", dst_ip, dst_port);
+            log(buffer);
+            
+//            }
+            
+            break;
+        }
     }
     
-    // send client response
-    NP::sendSockResponse(ssock, true, sockreq);
     
-    // Redirect data
-    sprintf(buffer, "connected to %s:%hu, redirecting data...\n", dst_ip, dst_port);
-    log(buffer);
-    
-    NP::redirectData(ssock, rsock);
-    
-    sprintf(buffer, "done. Connection to %s:%hu closed.\n", dst_ip, dst_port);
-    log(buffer);
 }
 
-// @TODO
-bool NP::isAllowedToConnect(char*) {
-    return true;
+bool NP::isAllowedToConnect(SOCKS_TYPE type, char* ip) {
+    
+    ifstream rulefile("socks.conf", ifstream::in);
+    string ruletype, ruleip;
+    
+    if (!rulefile) {
+        printf("socks.conf open filed\n");
+        return true;
+    }
+    
+    while (!rulefile.eof()) {
+        
+        rulefile >> ruletype >> ruleip;
+        printf("type = %s, ip = %s, checking %s\n", ruletype.c_str(), ruleip.c_str(), ip);
+        
+        if (ruletype == "c" && type == CONNECT) {
+            
+            for (int i = 0; i < ruleip.size(); i++) {
+                if (ruleip[i] == '*') {
+                    
+                    return true;
+                    
+                } else if (ruleip[i] != ip[i]) {
+                    
+                    break;
+                }
+            }
+            
+        } else if (ruletype == "b" && type == BIND) {
+        
+            for (int i = 0; i < ruleip.size(); i++) {
+                if (ruleip[i] == '*') {
+                    
+                    return true;
+                    
+                } else if (ruleip[i] != ip[i]) {
+                    
+                    break;
+                }
+            }
+        }
+        
+    }
+    
+    return false;
 }
+
+//{
+//    
+//    FILE* rulefile;
+//    char ruleip[16];
+//    char ruletype;
+//    
+//    rulefile = fopen("socks.conf", "r");
+//    
+//    if (rulefile == NULL) {
+//        printf("socks.conf open filed\n");
+//        return true;
+//    }
+//    
+//    while (!feof(rulefile)) {
+//        
+//        fscanf(rulefile, "%c %s", &ruletype, ruleip);
+//        printf("type = %c, ip = %s\n, checking %s", ruletype, ruleip, ip);
+//        
+//        if (ruletype == 'c' && type == CONNECT) {
+//            
+//            for (int i = 0; i < strlen(ruleip); i++) {
+//                if (ruleip[i] == '*') {
+//                    
+//                    fclose(rulefile);
+//                    return true;
+//                    
+//                } else if (ruleip[i] != ip[i]) {
+//                    
+//                    break;
+//                }
+//            }
+//            
+//        } else if (ruletype == 'b' && type == BIND) {
+//            
+//            for (int i = 0; i < strlen(ruleip); i++) {
+//                if (ruleip[i] == '*') {
+//                    
+//                    fclose(rulefile);
+//                    return true;
+//                    
+//                } else if (ruleip[i] != ip[i]) {
+//                    
+//                    break;
+//                }
+//            }
+//        }
+//        
+//    }
+//    
+//    fclose(rulefile);
+//    return false;
+//
+//}
 
 int NP::connectDestHost(char dst_ip[INET_ADDRSTRLEN], unsigned short dst_port) {
     
@@ -432,18 +602,26 @@ void NP::print(int ssock, string msg, int flag) {
     NP::writeWrapper(ssock, msg.c_str(), msg.length());
 }
 
-void NP::sendSockResponse(int ssock, bool isGranted, char* sockreq) {
+void NP::sendSockResponse(int ssock, bool isGranted, SOCKS_TYPE type, char* socksreq) {
 
-    char sockresp[8];
-    sockresp[0] = 0x00;
-    sockresp[1] = isGranted ? 90 : 91;
-    for (int i = 2; i <= 7; i++) {
-        sockresp[i] = sockreq[i];
+    char socksres[8];
+    socksres[0] = 0x00;
+    socksres[1] = isGranted ? 0x5A : 0x5B;
+    switch (type) {
+        case CONNECT:
+        case BIND:
+            for (int i = 2; i <= 7; i++) {
+                socksres[i] = socksreq[i];
+            }
+            break;
+            
+        default:
+            break;
     }
 //    for (int i = 0; i < 8; i++) {
 //        printf("sockrep[%d] = %u\n", i, (unsigned char)sockrep[i]);
 //    }
-    NP::writeWrapper(ssock, sockresp, 8);
+    NP::writeWrapper(ssock, socksres, 8);
 }
 
 void NP::redirectData(int ssock, int rsock) {
