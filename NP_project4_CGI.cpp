@@ -77,28 +77,34 @@ namespace NP {
     
     void writeWrapper(int sockfd, const char buffer[], size_t size);
     
-    string readWrapper(int sockfd);
+    int readWrapper(int sockfd);
     
     class Client {
         char ip[INET_ADDRSTRLEN];
         char port[6];
         char filename[FILENAME_LENGTH];
+        char socksip[INET_ADDRSTRLEN];
+        char socksport[6];
         string domId;
         int sockfd;
         fd_status sockStatus = F_CONNECTING;
         ifstream file;
         bool sentExit = false;
+        bool sentSocksReqFlag = false;
+        bool handledSocksRespFlag = false;
         
     public:
         Client() {}
         
         // assign operator
-        void set(int id, const char* iIp, const char* iPort, const char* iFile) {
+        void set(int id, const char* iIp, const char* iPort, const char* iFile, const char* iSocksip, const char* iSocksport) {
             
             domId = "m" + to_string(id);
             strncpy(ip, iIp, INET_ADDRSTRLEN);
             strncpy(port, iPort, 6);
             strncpy(filename, iFile, FILENAME_LENGTH);
+            strncpy(socksip, iSocksip, INET_ADDRSTRLEN);
+            strncpy(socksport, iSocksport, 6);
 
             // we *logically* only use assign operator when bootstrap
             // therefore, we open file in ifstream
@@ -109,8 +115,24 @@ namespace NP {
             close(sockfd);
         }
         
+        string getFileName() {
+            return string(filename);
+        }
+        
         string getIp() {
             return string(ip);
+        }
+        
+        string getPort() {
+            return string(port);
+        }
+        
+        string getSocksIp() {
+            return string(socksip);
+        }
+        
+        string getSocksPort() {
+            return string(socksport);
         }
         
         string getDomId() {
@@ -139,6 +161,20 @@ namespace NP {
         
         void setExitStatus(bool status) {
             sentExit = status;
+        }
+        
+        bool hasSentSocksReq() {
+            return sentSocksReqFlag;
+        }
+        
+        void sentSockReq();
+        
+        bool hasHandledSocksResp() {
+            return handledSocksRespFlag;
+        }
+        
+        void setHandledSocksFlag() {
+            handledSocksRespFlag = true;
         }
         
         /**
@@ -201,11 +237,12 @@ void NP::printFooter() {
 
 void NP::printBody() {
 
-    //setenv("QUERY_STRING", "h1=140.113.168.191&p1=4411&f1=t1.txt&h2=140.113.168.191&p2=4411&f2=t2.txt&h3=140.113.168.191&p3=4411&f3=t3.txt&h4=140.113.168.191&p4=4411&f4=t4.txt&h5=140.113.168.191&p5=4412&f5=t5.txt", 1);
     char* data = getenv("QUERY_STRING");
     char ip[CLIENT_MAX_NUMBER][INET_ADDRSTRLEN];
     char port[CLIENT_MAX_NUMBER][6];
     char file[CLIENT_MAX_NUMBER][FILENAME_LENGTH];
+    char socksip[CLIENT_MAX_NUMBER][INET_ADDRSTRLEN];
+    char socksport[CLIENT_MAX_NUMBER][6];
 
     char* token = strtok(data, "&");
     while (token != NULL && numberOfMachines < 5) {
@@ -228,13 +265,21 @@ void NP::printBody() {
         token = strtok(NULL, "&");
         strncpy(file[numberOfMachines], &token[3], FILENAME_LENGTH);
 
+        // socks host
+        token = strtok(NULL, "&");
+        strncpy(socksip[numberOfMachines], &token[4], INET_ADDRSTRLEN);
+        
+        // socks port
+        token = strtok(NULL, "&");
+        strncpy(socksport[numberOfMachines], &token[4], 6);
+        
         token = strtok(NULL, "&");
         numberOfMachines++;
     }
 
     for (int i = 0; i < numberOfMachines; i++) {
         // insert clients
-        clients[i].set(i, ip[i], port[i], file[i]);
+        clients[i].set(i, socksip[i], socksport[i], file[i], ip[i], port[i]);
     }
 
     char beforeTableHeader[] =
@@ -245,7 +290,8 @@ void NP::printBody() {
     
     string tableHeader;
     for (int i = 0; i < numberOfMachines; i++) {
-        tableHeader += "<td>" + clients[i].getIp() + "</td>";
+        tableHeader += "<td>" + clients[i].getFileName() + " @ " + clients[i].getSocksIp() + ":" + clients[i].getSocksPort() +
+            " via " + clients[i].getIp() + ":" + clients[i].getPort() + "</td>";
     }
     
     string tableData = "</tr><tr>";
@@ -318,22 +364,51 @@ void NP::executeClientPrograms() {
                     return;
                 }
                 
-                // we have to read prompt first
-                clients[j].setSockStatus(F_READING);
+                // we have to sent socks request first
+                clients[j].setSockStatus(F_WRITING);
                 
-                // remove from write fd so that we can read it in next select
-                FD_CLR(clients[j].getSockFd(), &ws);
+                // remove from read fd so that we can write it in next select
+                FD_CLR(clients[j].getSockFd(), &rs);
                 
             } else if (clients[j].getSockStatus() == F_READING && FD_ISSET(clients[j].getSockFd(), &rfds)) {
                 
-                string strRead = readWrapper(clients[j].getSockFd());
+                string strRead;
+                
+                if (!clients[j].hasHandledSocksResp()) {
+                    
+                    int n = NP::readWrapper(clients[j].getSockFd());
+                
+                    if (buffer[0] != 0 || buffer[1] != 0x5A) {
+                        
+                        clients[j].print("[SOCKS Server] Connection refused (" +to_string(buffer[0]) + "," + to_string(buffer[1]) + ")\n");
+                        
+                        FD_CLR(clients[j].getSockFd(), &rs);
+                        clients[j].setSockStatus(F_DONE);
+                        connections--;
+                    }
+                    
+                    clients[j].setHandledSocksFlag();
+                    
+                    if (n > 8) {
+                        strRead = string(&buffer[8]);
+                    }
+                    
+                } else {
+                    
+                    readWrapper(clients[j].getSockFd());
+                    strRead = string(buffer);
+                }
+                
+                if (strRead.empty()) {
+                    continue;
+                }
                 
                 // write to webpage
                 clients[j].print(strRead);
                 clients[j].print(strRead, IS_LOG | NEED_NEWLINE);  // log
                 
-                // only write when prompt is read
                 if (strRead.find("% ") != string::npos) {
+                    // only write when prompt is read
                     
                     // finish reading, write next time.
                     clients[j].setSockStatus(F_WRITING);
@@ -354,25 +429,33 @@ void NP::executeClientPrograms() {
                     
                     connections--;
                 }
-                
+            
             } else if (clients[j].getSockStatus() == F_WRITING && FD_ISSET(clients[j].getSockFd(), &wfds)) {
                 
-                // get input from file
-                string input;
-                getline(clients[j].getFile(), input);
-                input += "\n";  // indicate EOL
-                
-                // if exit is sent, exit after next write
-                if (input.find("exit") == 0) {
-                    clients[j].setExitStatus(true);
+                if (!clients[j].hasSentSocksReq()) {
+                    
+                    // need to send SOCKS request first
+                    clients[j].sentSockReq();
+                    
+                } else {
+                    
+                    // get input from file
+                    string input;
+                    getline(clients[j].getFile(), input);
+                    input += "\n";  // indicate EOL
+                    
+                    // if exit is sent, exit after next write
+                    if (input.find("exit") == 0) {
+                        clients[j].setExitStatus(true);
+                    }
+                    
+                    // write to webpage
+                    clients[j].print(input, NEED_BOLD);
+                    clients[j].print(input, IS_LOG | NEED_NEWLINE);    // log
+                    
+                    // write to server
+                    writeWrapper(clients[j].getSockFd(), input.c_str(), input.size());
                 }
-                
-                // write to webpage
-                clients[j].print(input, NEED_BOLD);
-                clients[j].print(input, IS_LOG | NEED_NEWLINE);    // log
-                
-                // write to server
-                writeWrapper(clients[j].getSockFd(), input.c_str(), input.size());
                 
                 // finish writing, read next time.
                 clients[j].setSockStatus(F_READING);
@@ -444,6 +527,47 @@ bool NP::Client::connect() {
     freeaddrinfo(res);
     return true;
 }
+
+void NP::Client::sentSockReq() {
+
+    char socksreq[9];
+    unsigned short ip[4];
+    
+    socksreq[0] = 4;
+    socksreq[1] = 1;
+    *((unsigned short*)&socksreq[2]) = htons(atoi(this->socksport));
+    
+    if(4 == sscanf(this->socksip, "%hu.%hu.%hu.%hu", &ip[0], &ip[1], &ip[2], &ip[3])) {
+
+        socksreq[4] = (unsigned char)ip[0];
+        socksreq[5] = (unsigned char)ip[1];
+        socksreq[6] = (unsigned char)ip[2];
+        socksreq[7] = (unsigned char)ip[3];
+    }
+    socksreq[8] = '\0';
+    
+//        for (int i = 0; i < 8; i++) {
+//            sprintf(buffer, "socksreq[%d] = %u\n", i, (unsigned char)socksreq[i]);
+//            this->print(buffer, IS_LOG | NEED_NEWLINE);  // log
+//        }
+
+    NP::writeWrapper(this->sockfd, socksreq, 9);
+    
+    this->sentSocksReqFlag = true;
+}
+
+//bool NP::Client::handleSockResp() {
+//    
+//    NP::readWrapper(this->sockfd);
+//    
+//    if (buffer[0] != 0 || buffer[1] != 0x5A) {
+//        this->print("[SOCKS Server] Connection refused (" +to_string(buffer[0]) + "," + to_string(buffer[1]) + ")\n");
+//        return false;
+//    }
+//    
+//    this->handledSocksRespFlag = true;
+//    return true;
+//}
 
 /// MISC
 void NP::print(string domId, string msg, int flag) {
@@ -557,7 +681,7 @@ void NP::writeWrapper(int sockfd, const char buffer[], size_t size) {
     }
 }
 
-string NP::readWrapper(int sockfd) {
+int NP::readWrapper(int sockfd) {
     
     resetBuffer();
     
@@ -568,14 +692,14 @@ string NP::readWrapper(int sockfd) {
     if (n < 0) {
         
         print(domId, "read error: " + string(buffer), IS_LOG | IS_ERROR | NEED_NEWLINE);
-        return string();
+        return -1;
         
     } else if (n == 0) {
     
-        return string();
+        return 0;
     }
-
+    
     print(domId, "read(size = " + to_string(sizeof(buffer)) + ", n = " + to_string(n) + ", via fd " + to_string(sockfd) +"):\n" + string(buffer), IS_LOG | NEED_NEWLINE);
-
-    return string(buffer);
+    
+    return n;
 }
