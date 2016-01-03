@@ -160,79 +160,6 @@ namespace NP {
         }
 #endif
     }
-    
-    class Client;
-    class ClientHandler;
-    
-    Client* iAm = NULL; // for client to store his own info
-
-    
-    /// Required info of each client
-    class Client {
-    public:
-        int id = 0;
-        int pid;
-        int sockfd;
-        char ip[INET_ADDRSTRLEN];
-        int port;
-        char*  msg;
-        // if a fd opened for pipe, store that fd here
-        // so that as soon as the pipe is cleared, we close fd
-        
-        Client() {}
-        
-        void set(int iId, int iPid, int iSockfd, char cIp[INET_ADDRSTRLEN], int iPort) {
-#ifdef DEBUG
-            NP::log("set client.. (" + to_string(id) + ", " + to_string(iPid) + ", " + to_string(iSockfd) + ", " + string(cIp) + "/" + to_string(iPort) + ")");
-#endif
-            id = iId;
-            pid = iPid;
-            sockfd = iSockfd;
-            strncpy(ip, cIp, INET_ADDRSTRLEN);
-            port = iPort;
-        }
-        
-        string getIpRepresentation() {
-            // as TA required
-//            return "CGILAB/511";
-            return string(ip) + "/" + to_string(port);
-        }
-        
-        void markAsInvalid() {
-            id = 0;
-        }
-        
-        string print() {
-            return "(" + to_string(id) + ", " + to_string(pid) + ", " + to_string(sockfd) + ", " + string(ip) + ":" + to_string(port) + ")";
-        }
-    };
-    
-    /// Wrapper class for clients
-    class ClientHandler {
-        
-        // initialize each element with empty client
-        Client clients[MAX_USER+1] = {};
-        
-        // Check if the user id is valid
-        bool isUserIdValid(int clientId);
-        
-    public:
-
-        /**
-         *	Insert new client to `clients` array
-         *
-         *	@return pointer to new client; NULL if error
-         */
-        Client* insertClient(int pid, int sockfd, char ip[INET_ADDRSTRLEN], int port);
-        
-        /**
-         *	Remove client from `clients`
-         *
-         *	@param id	client id
-         */
-        void removeClient(int id);
-    };
-    
 }
 
 int main(int argc, const char * argv[]) {
@@ -271,9 +198,6 @@ int main(int argc, const char * argv[]) {
     signal_action.sa_handler = SIG_DFL;
 	signal_action.sa_flags = SA_NOCLDWAIT | SA_RESTART;
     sigaction(SIGCHLD, &signal_action, NULL);
-    
-    // Initialize client handler
-    NP::ClientHandler clientHandler = NP::ClientHandler();
     
 #ifdef DEBUG
 	NP::log("Starting server using port: " + to_string(portnum) + " [HW2]");
@@ -329,19 +253,11 @@ int main(int argc, const char * argv[]) {
             
             close(sockfd);
 
-            // insert new client
-            NP::iAm = clientHandler.insertClient(getpid(), newsockfd, client_addr_str, client_port);
-            if (NP::iAm == NULL) {
-                NP::err("insert client error");
-            }
             NP::processRequest(newsockfd);
-            
             
 #ifdef DEBUG
             NP::log("processRequest return, leaving...");
 #endif
-            
-            clientHandler.removeClient(NP::iAm->id);
             
             exit(EXIT_SUCCESS);
             
@@ -387,47 +303,4 @@ void NP::processRequest(int sockfd) {
         printf("Domain name = %s\n", domain_name);
     }
     fflush(stdout);
-}
-
-
-/// NP::ClientHandler
-bool NP::ClientHandler::isUserIdValid(int clientId) {
-
-    return (clients[clientId].id > 0);
-}
-
-NP::Client* NP::ClientHandler::insertClient(int pid, int sockfd, char ip[INET_ADDRSTRLEN], int port) {
-    
-    // get an id for new client
-    int newId = -1;
-    for (int i = 1; i <= MAX_USER; i++) {
-        if (!isUserIdValid(i)) {
-            newId = i;
-            break;
-        }
-    }
-    
-    if (newId == -1) {
-        return NULL;
-    }
-    
-    clients[newId].set(newId, pid, sockfd, ip, port);
-    
-#ifdef DEBUG
-    NP::log("inserted client with id = " + to_string(clients[newId].id));
-#endif
-    
-    return &clients[newId];
-}
-
-void NP::ClientHandler::removeClient(int id) {
-#ifdef DEBUG
-    NP::log("removing client " + to_string(id));
-#endif
-    
-    if (!isUserIdValid(id)) {
-        NP::err("Try to remove invalid id " + to_string(id));
-    }
-    
-    clients[id].markAsInvalid();
 }
