@@ -29,13 +29,9 @@ using namespace std;
 
 #define MAX_SIZE 15001
 #define DEFAULT_PORT 4411
-#define MAX_USER 30
-#define MAX_PUBLIC_PIPE 101 // 1~100
-#define PIPE_SIZE (1025*sizeof(char))
-#define PIPE_SIZE_TOTAL ((PIPE_SIZE)*(MAX_PUBLIC_PIPE))
-#define USER_MSG_BUFFER (1025*sizeof(char))
-#define USER_MSG_BUFFER_TOTAL (USER_MSG_BUFFER*(MAX_USER+1))
-#define USER_NAME_SIZE 20
+#define MAX_USER 100
+#define MAX_USER_ID_LEN 50
+#define MAX_DOMAIN_NAME_LEN 1024
 //#define DEBUG 1
 
 char buffer[MAX_SIZE];
@@ -113,30 +109,25 @@ namespace NP {
         }
     }
 	
-	string readWrapper(int sockfd, bool needPrompt = true) {
-		
-		// display prompt
-        if (needPrompt) {
-            writeWrapper(sockfd, "% ", 2);
-        }
-
-        resetBuffer();
-		int n = read(sockfd, buffer, sizeof(buffer));
-		if (n < 0) {
-		
-            NP::err("read error");
+    char* readWrapper(int sockfd, bool needPrompt = true) {
         
+        resetBuffer();
+        int n = read(sockfd, buffer, sizeof(buffer));
+        if (n < 0) {
+            
+            NP::err("read error");
+            
         } else if (n == 0) {
             
-            return string();
+            return NULL;
         }
         
 #ifdef DEBUG
-		NP::log("read(size = " + to_string(sizeof(buffer)) + ", n = " + to_string(n) + "): \n" + string(buffer));
+        NP::log("read(size = " + to_string(sizeof(buffer)) + ", n = " + to_string(n) + "): \n" + string(buffer));
 #endif
-
-		return string(buffer);
-	}
+        
+        return buffer;
+    }
     
     void dup2(const int newfd, const int oldfd, bool needOutput = true) {
         
@@ -173,32 +164,13 @@ namespace NP {
     class Client;
     class ClientHandler;
     
-    /// for shared memory management
-    int client_counter = 0;
-    int shmIdClientData;
-    ClientHandler* ptrShmClientData;
     Client* iAm = NULL; // for client to store his own info
-    
-    void shmdt(const void* shm) {
-        if (::shmdt(shm) == -1) {
-            NP::err("shmdt error with errno " + to_string(errno));
-        }
-    }
-    
-    void markShmToBeDestroyed(int shmId) {
-        if (shmctl(shmId, IPC_RMID, NULL) == -1) {
-            NP::err("shmctl error with errno " + to_string(errno));
-        }
-    }
-    
-    // handler for SIGCHLD
-    void signal_handler(int signum);
+
     
     /// Required info of each client
     class Client {
     public:
         int id = 0;
-        char userName[USER_NAME_SIZE+1] = "(no name)";
         int pid;
         int sockfd;
         char ip[INET_ADDRSTRLEN];
@@ -206,7 +178,6 @@ namespace NP {
         char*  msg;
         // if a fd opened for pipe, store that fd here
         // so that as soon as the pipe is cleared, we close fd
-        int fdOpenForPipe[MAX_PUBLIC_PIPE] = {};
         
         Client() {}
         
@@ -219,16 +190,12 @@ namespace NP {
             sockfd = iSockfd;
             strncpy(ip, cIp, INET_ADDRSTRLEN);
             port = iPort;
-            
-            // reset name
-            memset(userName, 0, sizeof(userName));
-            strcpy(userName, "(no name)");
         }
         
         string getIpRepresentation() {
             // as TA required
-            return "CGILAB/511";
-//            return string(ip) + "/" + to_string(port);
+//            return "CGILAB/511";
+            return string(ip) + "/" + to_string(port);
         }
         
         void markAsInvalid() {
@@ -238,10 +205,6 @@ namespace NP {
         string print() {
             return "(" + to_string(id) + ", " + to_string(pid) + ", " + to_string(sockfd) + ", " + string(ip) + ":" + to_string(port) + ")";
         }
-        
-        string getName() {
-            return string(userName);
-        }
     };
     
     /// Wrapper class for clients
@@ -250,23 +213,11 @@ namespace NP {
         // initialize each element with empty client
         Client clients[MAX_USER+1] = {};
         
-        bool pipeInUseFlag[MAX_PUBLIC_PIPE] = {};
-        
         // Check if the user id is valid
         bool isUserIdValid(int clientId);
         
-        // Signal specific child
-        void signalClient(int clientId, int signal);
-        
-        // Signal every child
-        void signalEveryClient(int signal);
-        
     public:
-        char curCmd[10000]; // to store command that needs to broadcast
-        int curPublicPipe = 0;
-        bool isJustReadPublicPipe = 0;  // true: just read; false: just wrote
-        friend void debug(int);
-        
+
         /**
          *	Insert new client to `clients` array
          *
@@ -317,11 +268,9 @@ int main(int argc, const char * argv[]) {
     
     // SIGCHLD to prevnet zombie process
 	struct sigaction signal_action;
-    signal_action.sa_handler = NP::signal_handler;
+    signal_action.sa_handler = SIG_DFL;
 	signal_action.sa_flags = SA_NOCLDWAIT | SA_RESTART;
     sigaction(SIGCHLD, &signal_action, NULL);
-    sigaction(SIGUSR1, &signal_action, NULL);
-    sigaction(SIGUSR2, &signal_action, NULL);
     
     // Initialize client handler
     NP::ClientHandler clientHandler = NP::ClientHandler();
@@ -361,21 +310,6 @@ int main(int argc, const char * argv[]) {
 		client_addr_len = sizeof(client_addr);
 		newsockfd = ::accept(sockfd, (struct sockaddr *) &client_addr, &client_addr_len);
         
-        // check how many clients are connected,
-        // if it's the first one, create shm.
-        if (NP::client_counter == 0) {
-            
-            // Create shared memory
-            // 1. for client data
-            NP::shmIdClientData = shmget(IPC_PRIVATE, sizeof(clientHandler), IPC_CREAT | IPC_EXCL | 0666);
-            if (NP::shmIdClientData < 0) {
-                NP::err("shmIdClientData <0 with errno " + to_string(errno));
-            }
-            // prepare data
-            NP::ptrShmClientData = (NP::ClientHandler*) shmat(NP::shmIdClientData, NULL, 0);
-            memcpy(NP::ptrShmClientData, &clientHandler, sizeof(clientHandler));
-        }
-        
         // get client addr and port
         inet_ntop(AF_INET, &(client_addr.sin_addr), client_addr_str, INET_ADDRSTRLEN);
         client_port = client_addr.sin_port;
@@ -395,14 +329,8 @@ int main(int argc, const char * argv[]) {
             
             close(sockfd);
 
-            // reset sigaction
-            struct sigaction sigchld_action;
-            sigchld_action.sa_handler = SIG_DFL;
-            sigchld_action.sa_flags = SA_NOCLDWAIT;
-            sigaction(SIGCHLD, &sigchld_action, NULL);
-            
             // insert new client
-            NP::iAm = NP::ptrShmClientData->insertClient(getpid(), newsockfd, client_addr_str, client_port);
+            NP::iAm = clientHandler.insertClient(getpid(), newsockfd, client_addr_str, client_port);
             if (NP::iAm == NULL) {
                 NP::err("insert client error");
             }
@@ -413,18 +341,12 @@ int main(int argc, const char * argv[]) {
             NP::log("processRequest return, leaving...");
 #endif
             
-            NP::ptrShmClientData->removeClient(NP::iAm->id);
+            clientHandler.removeClient(NP::iAm->id);
             
             exit(EXIT_SUCCESS);
             
         } else {
 
-            NP::client_counter++;
-            
-#ifdef DEBUG
-            NP::log("[parent] client_counter incremented to " + to_string(NP::client_counter));
-#endif
-            
             close(newsockfd);
         }
 	}
@@ -436,56 +358,43 @@ int main(int argc, const char * argv[]) {
  *  Process connection request
  *
  *  @param sockfd
- *
- *  @return boolean value that indicates if we should exit
  */
 void NP::processRequest(int sockfd) {
     
-    
-}
-
-
-/* For HW2 */
-
-void NP::signal_handler(int signum) {
-    
-    switch (signum) {
-        case SIGCHLD:
-            client_counter--;
-#ifdef DEBUG
-            NP::log("SIGCHLD received, counter changed to " + to_string(client_counter));
-#endif
-            // if there's no client left, detach shm and mark it as removable
-            if (!client_counter) {
-#ifdef DEBUG
-                NP::log("No more client... detach shm");
-#endif
-                shmdt(ptrShmClientData);
-                markShmToBeDestroyed(shmIdClientData);
-            }
+    char* sockreq = NP::readWrapper(sockfd);
+    for (int i = 0; i < 8; i++) {
+        printf("sockreq[%d] = %u\n", i, (unsigned char)sockreq[i]);
     }
+    int cd = sockreq[1];
+    unsigned short dst_port;
+    char dst_ip[INET_ADDRSTRLEN];
+//    char user_id[MAX_USER_ID_LEN+1];
+    char domain_name[MAX_DOMAIN_NAME_LEN+1];
+    
+    // decapsulate the damn port the way it encapsulated
+    dst_port = (unsigned short) ntohs(*(unsigned short*)&sockreq[2]);
+    sprintf(dst_ip, "%u.%u.%u.%u\n", (unsigned char)sockreq[4], (unsigned char)sockreq[5], (unsigned char)sockreq[6], (unsigned char)sockreq[7]);
+    
+    //    strncpy(user_id, strtok(&sockreq[8], "\0"), MAX_USER_ID_LEN);
+    printf("get:\nVN: %d, CD: %d, DST_PORT: %hu, DST_IP: %s\n", sockreq[0], cd, dst_port, dst_ip);
+
+    if (strcmp(dst_ip, "0.0.0.")) {    // DST IP = 0.0.0.x
+//        int i = 8;
+//        while (sockreq[i] != '\0') {
+//            i++;
+//        }
+        strncpy(domain_name, strtok(&sockreq[8+1], "\0"), MAX_DOMAIN_NAME_LEN);
+        printf("Domain name = %s\n", domain_name);
+    }
+    fflush(stdout);
 }
+
 
 /// NP::ClientHandler
 bool NP::ClientHandler::isUserIdValid(int clientId) {
 
     return (clients[clientId].id > 0);
 }
-
-void NP::ClientHandler::signalClient(int clientId, int signal) {
-#ifdef DEBUG
-    NP::log("signal-ing client " + to_string(clientId) + " with pid " + to_string(clients[clientId].pid));
-#endif
-    
-    if (!isUserIdValid(clientId)) {
-        NP::err("Try to send signal to invalid client with id " + to_string(clientId));
-    }
-    
-    if(kill(clients[clientId].pid, SIGUSR1) == -1) {
-        NP::err("Failed to send to client " + to_string(clientId) + ", errno = " + to_string(errno));
-    }
-}
-
 
 NP::Client* NP::ClientHandler::insertClient(int pid, int sockfd, char ip[INET_ADDRSTRLEN], int port) {
     
@@ -503,7 +412,6 @@ NP::Client* NP::ClientHandler::insertClient(int pid, int sockfd, char ip[INET_AD
     }
     
     clients[newId].set(newId, pid, sockfd, ip, port);
-    memset(clients[newId].fdOpenForPipe, 0, sizeof(clients[newId].fdOpenForPipe));
     
 #ifdef DEBUG
     NP::log("inserted client with id = " + to_string(clients[newId].id));
