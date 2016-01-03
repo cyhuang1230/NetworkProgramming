@@ -331,6 +331,10 @@ void NP::processRequest(int ssock) {
 //    for (int i = 0; i < 8; i++) {
 //        printf("sockreq[%d] = %u\n", i, (unsigned char)sockreq[i]);
 //    }
+    if (socksreq[0] != 4) {
+        return;
+    }
+    
     int cd = socksreq[1];
     unsigned short dst_port;
     char dst_ip[INET_ADDRSTRLEN];
@@ -460,6 +464,7 @@ bool NP::isAllowedToConnect(SOCKS_TYPE type, char* ip) {
     
     ifstream rulefile("socks.conf", ifstream::in);
     string ruletype, ruleip;
+    size_t i, ruleipsize;
     
     if (!rulefile) {
         printf("socks.conf open filed\n");
@@ -470,10 +475,11 @@ bool NP::isAllowedToConnect(SOCKS_TYPE type, char* ip) {
         
         rulefile >> ruletype >> ruleip;
         printf("type = %s, ip = %s, checking %s\n", ruletype.c_str(), ruleip.c_str(), ip);
+        ruleipsize = ruleip.size();
         
         if (ruletype == "c" && type == CONNECT) {
             
-            for (int i = 0; i < ruleip.size(); i++) {
+            for (i = 0; i < ruleipsize; i++) {
                 if (ruleip[i] == '*') {
                     
                     return true;
@@ -484,9 +490,13 @@ bool NP::isAllowedToConnect(SOCKS_TYPE type, char* ip) {
                 }
             }
             
+            if (i == ruleipsize) {
+                return true;
+            }
+            
         } else if (ruletype == "b" && type == BIND) {
         
-            for (int i = 0; i < ruleip.size(); i++) {
+            for (i = 0; i < ruleipsize; i++) {
                 if (ruleip[i] == '*') {
                     
                     return true;
@@ -495,6 +505,10 @@ bool NP::isAllowedToConnect(SOCKS_TYPE type, char* ip) {
                     
                     break;
                 }
+            }
+            
+            if (i == ruleipsize) {
+                return true;
             }
         }
         
@@ -502,60 +516,6 @@ bool NP::isAllowedToConnect(SOCKS_TYPE type, char* ip) {
     
     return false;
 }
-
-//{
-//    
-//    FILE* rulefile;
-//    char ruleip[16];
-//    char ruletype;
-//    
-//    rulefile = fopen("socks.conf", "r");
-//    
-//    if (rulefile == NULL) {
-//        printf("socks.conf open filed\n");
-//        return true;
-//    }
-//    
-//    while (!feof(rulefile)) {
-//        
-//        fscanf(rulefile, "%c %s", &ruletype, ruleip);
-//        printf("type = %c, ip = %s\n, checking %s", ruletype, ruleip, ip);
-//        
-//        if (ruletype == 'c' && type == CONNECT) {
-//            
-//            for (int i = 0; i < strlen(ruleip); i++) {
-//                if (ruleip[i] == '*') {
-//                    
-//                    fclose(rulefile);
-//                    return true;
-//                    
-//                } else if (ruleip[i] != ip[i]) {
-//                    
-//                    break;
-//                }
-//            }
-//            
-//        } else if (ruletype == 'b' && type == BIND) {
-//            
-//            for (int i = 0; i < strlen(ruleip); i++) {
-//                if (ruleip[i] == '*') {
-//                    
-//                    fclose(rulefile);
-//                    return true;
-//                    
-//                } else if (ruleip[i] != ip[i]) {
-//                    
-//                    break;
-//                }
-//            }
-//        }
-//        
-//    }
-//    
-//    fclose(rulefile);
-//    return false;
-//
-//}
 
 int NP::connectDestHost(char dst_ip[INET_ADDRSTRLEN], unsigned short dst_port) {
     
@@ -654,7 +614,7 @@ void NP::redirectData(int ssock, int rsock) {
     bzero(ssockbuffer, BUFFER_SIZE);
 
     struct timeval timeout;
-    timeout.tv_sec = 10;
+    timeout.tv_sec = 60;
     int toCheck = 0;
     
     while (1) {
