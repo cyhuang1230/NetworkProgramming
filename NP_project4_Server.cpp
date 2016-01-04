@@ -131,10 +131,10 @@ namespace NP {
 
     void writeWrapper(int sockfd, const char buffer[], size_t size) {
         
-       int n = write(sockfd, buffer, size);
+       ssize_t n = write(sockfd, buffer, size);
 #ifdef DEBUG
 //        NP::log("write(size = " + to_string(size) + ", n = " + to_string(n) + ", via fd " + to_string(sockfd) +")\n");
-        NP::log("write(size = " + to_string(size) + ", n = " + to_string(n) + ", via fd " + to_string(sockfd) +"): \n" + string(buffer));
+        NP::log("write(size = " + to_string(size) + ", n = " + to_string(n) + ", via fd " + to_string(sockfd) +"): [Only show first 10 characters]\n" + string(buffer).substr(0, 10) );
 #endif
         
         if (n < 0) {
@@ -142,10 +142,10 @@ namespace NP {
         }
     }
     
-    size_t readWrapper(int sockfd) {
+    ssize_t readWrapper(int sockfd) {
         
         resetBuffer();
-        size_t n = read(sockfd, buffer, sizeof(buffer));
+        ssize_t n = read(sockfd, buffer, sizeof(buffer));
         if (n < 0) {
             
             NP::err("read error");
@@ -157,7 +157,7 @@ namespace NP {
         
 #ifdef DEBUG
 //        NP::log("read(size = " + to_string(sizeof(buffer)) + ", n = " + to_string(n) + ", via fd " + to_string(sockfd) +")\n");
-        NP::log("read(size = " + to_string(sizeof(buffer)) + ", n = " + to_string(n) + ", via fd " + to_string(sockfd) +"): \n" + string(buffer));
+        NP::log("read(size = " + to_string(sizeof(buffer)) + ", n = " + to_string(n) + ", via fd " + to_string(sockfd) +"):  [Only show first 10 characters]\n" + string(buffer).substr(0, 10));
 #endif
         
         return n;
@@ -175,6 +175,9 @@ namespace NP {
     }
     
 /// HW4
+    string clientAddr = "(null)";
+    unsigned short clientPort = 0;
+    
     void processRequest(int);
 
     void sendSockResponse(int ssock, bool isGranted, SOCKS_TYPE type, char* sockreq);
@@ -264,8 +267,11 @@ int main(int argc, const char * argv[]) {
         inet_ntop(AF_INET, &(client_addr.sin_addr), client_addr_str, INET_ADDRSTRLEN);
         client_port = client_addr.sin_port;
 
+        NP::clientAddr = string(client_addr_str);
+        NP::clientPort = client_port;
+        
 #ifdef DEBUG
-        NP::log("Connection from " + string(client_addr_str) + ":" + to_string(client_port) + " accepted.");
+        NP::log("Connection from " + NP::clientAddr + ":" + to_string(NP::clientPort) + " accepted.");
 #endif
 		if (newsockfd < 0) {
 			NP::err("accept error");
@@ -314,29 +320,25 @@ void NP::processRequest(int ssock) {
         return;
     }
     
+    int vn = socksreq[0];
     int cd = socksreq[1];
     unsigned short dst_port;
     char dst_ip[INET_ADDRSTRLEN];
-//    char user_id[MAX_USER_ID_LEN+1];
+    char user_id[MAX_USER_ID_LEN+1];
 //    char domain_name[MAX_DOMAIN_NAME_LEN+1];
     
     // decapsulate the damn port the way it encapsulated
     dst_port = (unsigned short) ntohs(*(unsigned short*)&socksreq[2]);
     sprintf(dst_ip, "%u.%u.%u.%u", (unsigned char)socksreq[4], (unsigned char)socksreq[5], (unsigned char)socksreq[6], (unsigned char)socksreq[7]);
+    char* user_id_pch = strtok(&socksreq[8], "\0");
+    strncpy(user_id, (user_id_pch == NULL ? "(no name)" : user_id_pch), MAX_USER_ID_LEN);  // USER_ID
     
-    sprintf(buffer, "get:\nVN: %d, CD: %d, DST_PORT: %hu, DST_IP: %s\n", socksreq[0], cd, dst_port, dst_ip);
+    sprintf(buffer, "SOCKS Request:\nVN: %d, CD: %d, DST_IP: %s, DST_PORT: %hu, USER_ID: %s\n", vn, cd, dst_ip, dst_port, user_id);
     log(buffer);
-    
-    // @TODO: user_id, domain_name
-//    strncpy(user_id, strtok(&sockreq[8], "\0"), MAX_USER_ID_LEN);
-//    if (strcmp(dst_ip, "0.0.0.")) {    // DST IP = 0.0.0.x
-//        int i = 8;
-//        while (sockreq[i] != '\0') {
-//            i++;
-//        }
-//        strncpy(domain_name, strtok(&sockreq[8+1], "\0"), MAX_DOMAIN_NAME_LEN);
-//        printf("Domain name = %s\n", domain_name);
-//    }
+
+    sprintf(buffer, "Check firewall rules: (%s:%hu) -> (%s:%hu)\n", NP::clientAddr.c_str(), NP::clientPort, dst_ip, dst_port);
+    log(buffer);
+
 
     // check firewall rules
     if (!NP::isAllowedToConnect((SOCKS_TYPE)cd, dst_ip)) {
@@ -352,7 +354,7 @@ void NP::processRequest(int ssock) {
         case CONNECT: // CONNECT
         {
             // connect to dest host
-            sprintf(buffer, "[CONNECT] firewall passed, connecting to %s:%hu...\n", dst_ip, dst_port);
+            sprintf(buffer, "[SOCKS_CONNECT] firewall granted, start connecting to %s:%hu...\n", dst_ip, dst_port);
             log(buffer);
             int rsock = -1;
             if ((rsock = NP::connectDestHost(dst_ip, dst_port)) == -1) {
@@ -364,12 +366,12 @@ void NP::processRequest(int ssock) {
             NP::sendSockResponse(ssock, true, CONNECT, socksreq);
 
             // Redirect data
-            sprintf(buffer, "connected to %s:%hu, redirecting data...\n", dst_ip, dst_port);
+            sprintf(buffer, "[SOCKS_CONNECT] connected to %s:%hu, redirecting data...\n", dst_ip, dst_port);
             log(buffer);
             
             NP::redirectData(ssock, rsock);
             
-            sprintf(buffer, "done. Connection to %s:%hu closed.\n", dst_ip, dst_port);
+            sprintf(buffer, "[SOCKS_CONNECT] done. Connection to %s:%hu closed.\n", dst_ip, dst_port);
             log(buffer);
 
             close(rsock);
@@ -378,12 +380,12 @@ void NP::processRequest(int ssock) {
             
         case BIND: // BIND
         {
-            sprintf(buffer, "[BIND] firewall passed, connecting to %s:%hu...\n", dst_ip, dst_port);
+            sprintf(buffer, "[SOCKS_BIND] firewall granted, start connecting to %s:%hu...\n", dst_ip, dst_port);
 
             // get socket
             int bindsock = 0;
             if ((bindsock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
-                NP::err("[BIND] Cannot open socket!");
+                NP::err("[SOCKS_BIND] Cannot open socket!");
             }
             
             // bind
@@ -395,20 +397,20 @@ void NP::processRequest(int ssock) {
             ftpsv_addr.sin_port = 0;
             
             if (::bind(bindsock, (struct sockaddr*) &ftpsv_addr, sizeof(ftpsv_addr)) < 0) {
-                NP::err("[BIND] Bind error");
+                NP::err("[SOCKS_BIND] Bind error");
             }
             ftpsv_len = sizeof(ftpsv_addr);
             ::getsockname(bindsock, (struct sockaddr*) &ftpsv_addr, &ftpsv_len);
             
-            NP::log("[BIND] socket " + to_string(bindsock) + " binded to port " + to_string(ntohs(ftpsv_addr.sin_port)));
+            NP::log("[SOCKS_BIND] socket " + to_string(bindsock) + " binded to port " + to_string(ntohs(ftpsv_addr.sin_port)));
             
             /**
              *  Listen
              */
             if (::listen(bindsock, 5) < 0) {
-                NP::err("[BIND] listen error");
+                NP::err("[SOCKS_BIND] listen error");
             }
-            NP::log("[BIND] linstening to port " + to_string(ntohs(ftpsv_addr.sin_port)));
+            NP::log("[SOCKS_BIND] linstening to port " + to_string(ntohs(ftpsv_addr.sin_port)));
 
             
             // send client response
@@ -419,17 +421,17 @@ void NP::processRequest(int ssock) {
             socksreq[7] = 0x0;
             NP::sendSockResponse(ssock, true, BIND, socksreq);
 
-            NP::log("sent socks response, waiting for connections...");
+            NP::log("[SOCKS_BIND]sent socks response, waiting for connections...");
 
 //            while (1) {
             
             ftpcli_len = sizeof(ftpcli_addr);
             int newbindsock = ::accept(bindsock, (struct sockaddr *) &ftpcli_addr, &ftpcli_len);
             if (newbindsock == -1) {
-                NP::err("[BIND] accept error");
+                NP::err("[SOCKS_BIND] accept error");
             }
             
-            NP::log("[BIND] accepted a connection");
+            NP::log("[SOCKS_BIND] accepted a connection");
             
             // send client response
             char ftpcli_addr_str[INET_ADDRSTRLEN];
@@ -446,12 +448,12 @@ void NP::processRequest(int ssock) {
             NP::sendSockResponse(ssock, true, BIND, socksreq);
             
             // Redirect data
-            sprintf(buffer, "[BIND] connected to %s:%hu, redirecting data...\n", dst_ip, dst_port);
+            sprintf(buffer, "[SOCKS_BIND] connected to %s:%hu, redirecting data...\n", dst_ip, dst_port);
             log(buffer);
             
             NP::redirectData(ssock, newbindsock);
             
-            sprintf(buffer, "[BIND] done. Connection to %s:%hu closed.\n", dst_ip, dst_port);
+            sprintf(buffer, "[SOCKS_BIND] done. Connection to %s:%hu closed.\n", dst_ip, dst_port);
             log(buffer);
             
             close(newbindsock);
