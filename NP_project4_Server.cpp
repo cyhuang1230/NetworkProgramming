@@ -174,27 +174,6 @@ namespace NP {
         }
     }
     
-    void close(const int fd, const int i, const int j, string errmsg = "", string sucmsg = "", bool needOutput = true) {
-        
-        if (::close(fd) == -1) {
-
-            if (errmsg.empty()) {
-            
-                NP::err("close pipes[" + to_string(i) + "][" + to_string(j) + "] error " + to_string(errno));
-                
-            } else {
-                
-                NP::err(errmsg);
-            }
-        }
-        
-#ifdef DEBUG
-        if (needOutput) {
-            sucmsg.empty() ? NP::log("close pipes[" + to_string(i) + "][" + to_string(j) + "]") : NP::log(sucmsg);
-        }
-#endif
-    }
-
 /// HW4
     void processRequest(int);
 
@@ -362,7 +341,7 @@ void NP::processRequest(int ssock) {
     // check firewall rules
     if (!NP::isAllowedToConnect((SOCKS_TYPE)cd, dst_ip)) {
 
-        sprintf(buffer, "firewall didnt pass, return\n", dst_ip, dst_port);
+        sprintf(buffer, "firewall didnt pass(%s:%hu), return\n", dst_ip, dst_port);
         log(buffer);
         
         NP::sendSockResponse(ssock, false, DONTCARE, socksreq);
@@ -393,6 +372,7 @@ void NP::processRequest(int ssock) {
             sprintf(buffer, "done. Connection to %s:%hu closed.\n", dst_ip, dst_port);
             log(buffer);
 
+            close(rsock);
             break;
         }
             
@@ -420,27 +400,50 @@ void NP::processRequest(int ssock) {
             ftpsv_len = sizeof(ftpsv_addr);
             ::getsockname(bindsock, (struct sockaddr*) &ftpsv_addr, &ftpsv_len);
             
-            NP::log("[BIND] BIND: to port " + to_string(ftpsv_addr.sin_port));
+            NP::log("[BIND] socket " + to_string(bindsock) + " binded to port " + to_string(ntohs(ftpsv_addr.sin_port)));
             
             /**
              *  Listen
              */
-            listen(bindsock, 30);
-            
+            if (::listen(bindsock, 5) < 0) {
+                NP::err("[BIND] listen error");
+            }
+            NP::log("[BIND] linstening to port " + to_string(ntohs(ftpsv_addr.sin_port)));
+
             
             // send client response
-            *((unsigned short*)&socksreq[2]) = htons(ftpsv_addr.sin_port);
+            *((unsigned short*)&socksreq[2]) = (ftpsv_addr.sin_port);
             socksreq[4] = 0x0;
             socksreq[5] = 0x0;
             socksreq[6] = 0x0;
             socksreq[7] = 0x0;
             NP::sendSockResponse(ssock, true, BIND, socksreq);
 
-            
+            NP::log("sent socks response, waiting for connections...");
+
 //            while (1) {
             
             ftpcli_len = sizeof(ftpcli_addr);
             int newbindsock = ::accept(bindsock, (struct sockaddr *) &ftpcli_addr, &ftpcli_len);
+            if (newbindsock == -1) {
+                NP::err("[BIND] accept error");
+            }
+            
+            NP::log("[BIND] accepted a connection");
+            
+            // send client response
+            char ftpcli_addr_str[INET_ADDRSTRLEN];
+            unsigned short ip[4];
+            inet_ntop(AF_INET, &(ftpcli_addr.sin_addr), ftpcli_addr_str, INET_ADDRSTRLEN);
+            sscanf(ftpcli_addr_str, "%hu.%hu.%hu.%hu", &ip[0], &ip[1], &ip[2], &ip[3]);
+            
+            *((unsigned short*)&socksreq[2]) = (ftpcli_addr.sin_port);
+            socksreq[4] = (unsigned char)ip[0];
+            socksreq[5] = (unsigned char)ip[1];
+            socksreq[6] = (unsigned char)ip[2];
+            socksreq[7] = (unsigned char)ip[3];
+
+            NP::sendSockResponse(ssock, true, BIND, socksreq);
             
             // Redirect data
             sprintf(buffer, "[BIND] connected to %s:%hu, redirecting data...\n", dst_ip, dst_port);
@@ -451,6 +454,7 @@ void NP::processRequest(int ssock) {
             sprintf(buffer, "[BIND] done. Connection to %s:%hu closed.\n", dst_ip, dst_port);
             log(buffer);
             
+            close(newbindsock);
 //            }
             
             break;
@@ -564,14 +568,14 @@ void NP::print(int ssock, string msg, int flag) {
 
 void NP::sendSockResponse(int ssock, bool isGranted, SOCKS_TYPE type, char* socksreq) {
 
-    char socksres[8];
-    socksres[0] = 0x00;
-    socksres[1] = isGranted ? 0x5A : 0x5B;
+    char socksresp[8];
+    socksresp[0] = 0x00;
+    socksresp[1] = isGranted ? 0x5A : 0x5B;
     switch (type) {
         case CONNECT:
         case BIND:
             for (int i = 2; i <= 7; i++) {
-                socksres[i] = socksreq[i];
+                socksresp[i] = socksreq[i];
             }
             break;
             
@@ -581,7 +585,7 @@ void NP::sendSockResponse(int ssock, bool isGranted, SOCKS_TYPE type, char* sock
 //    for (int i = 0; i < 8; i++) {
 //        printf("sockrep[%d] = %u\n", i, (unsigned char)sockrep[i]);
 //    }
-    NP::writeWrapper(ssock, socksres, 8);
+    NP::writeWrapper(ssock, socksresp, 8);
 }
 
 void NP::redirectData(int ssock, int rsock) {
