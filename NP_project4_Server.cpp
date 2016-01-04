@@ -26,7 +26,7 @@
 #include <fcntl.h>
 using namespace std;
 
-#define BUFFER_SIZE 15001
+#define BUFFER_SIZE 150001
 #define DEFAULT_PORT 4411
 #define MAX_USER 100
 #define MAX_USER_ID_LEN 50
@@ -38,7 +38,7 @@ using namespace std;
 #define IS_ERROR (1 << 1)
 #define NEED_NEWLINE (1 << 2)
 #define NEED_BOLD (1<<3)
-char buffer[BUFFER_SIZE];
+char buffer[BUFFER_SIZE+1];
 enum SOCKS_TYPE {CONNECT = 1, BIND, DONTCARE};
 
 namespace NP {
@@ -133,8 +133,8 @@ namespace NP {
         
        ssize_t n = write(sockfd, buffer, size);
 #ifdef DEBUG
-//        NP::log("write(size = " + to_string(size) + ", n = " + to_string(n) + ", via fd " + to_string(sockfd) +")\n");
-        NP::log("write(size = " + to_string(size) + ", n = " + to_string(n) + ", via fd " + to_string(sockfd) +"): [Only show first 10 characters]\n" + string(buffer).substr(0, 10) );
+        NP::log("write(size = " + to_string(size) + ", n = " + to_string(n) + ", via fd " + to_string(sockfd) +")\n");
+//        NP::log("write(size = " + to_string(size) + ", n = " + to_string(n) + ", via fd " + to_string(sockfd) +"): [Only show first 10 characters]\n" + string(buffer).substr(0, 10) );
 #endif
         
         if (n < 0) {
@@ -156,8 +156,8 @@ namespace NP {
         }
         
 #ifdef DEBUG
-//        NP::log("read(size = " + to_string(sizeof(buffer)) + ", n = " + to_string(n) + ", via fd " + to_string(sockfd) +")\n");
-        NP::log("read(size = " + to_string(sizeof(buffer)) + ", n = " + to_string(n) + ", via fd " + to_string(sockfd) +"):  [Only show first 10 characters]\n" + string(buffer).substr(0, 10));
+        NP::log("read(size = " + to_string(sizeof(buffer)) + ", n = " + to_string(n) + ", via fd " + to_string(sockfd) +")\n");
+//        NP::log("read(size = " + to_string(sizeof(buffer)) + ", n = " + to_string(n) + ", via fd " + to_string(sockfd) +"):  [Only show first 10 characters]\n" + string(buffer).substr(0, 10));
 #endif
         
         return n;
@@ -357,6 +357,7 @@ void NP::processRequest(int ssock) {
             sprintf(buffer, "[SOCKS_CONNECT] firewall granted, start connecting to %s:%hu...\n", dst_ip, dst_port);
             log(buffer);
             int rsock = -1;
+
             if ((rsock = NP::connectDestHost(dst_ip, dst_port)) == -1) {
                 NP::sendSockResponse(ssock, false, CONNECT, socksreq);
                 return;
@@ -619,6 +620,9 @@ void NP::redirectData(int ssock, int rsock) {
     bzero(rsockbuffer, BUFFER_SIZE);
     bzero(ssockbuffer, BUFFER_SIZE);
 
+    bool rsockbufempty = true;
+    bool ssockbufempty = true;
+    
     struct timeval timeout;
     timeout.tv_sec = 1200;
     int toCheck = 0;
@@ -629,13 +633,13 @@ void NP::redirectData(int ssock, int rsock) {
         memcpy(&wfds, &ws, sizeof(wfds));
 
         toCheck = select(nfds, &rfds, NULL, NULL, &timeout);
-        NP::log("toCheck0 = " + to_string(toCheck)+"\n");
+//        NP::log("toCheck0 = " + to_string(toCheck)+"\n");
         if (toCheck == 0) {
             break;
         }
 
-        if (ssockbuffer[0] == '\0' && FD_ISSET(ssock, &rfds)) {
-            NP::log("toCheck0 = " + to_string(toCheck)+" :: 1\n");
+        if (ssockbufempty && FD_ISSET(ssock, &rfds)) {
+//            NP::log("toCheck0 = " + to_string(toCheck)+" :: 1\n");
 
             ssockbuffersize = NP::readWrapper(ssock);
             char* readStr = buffer;
@@ -643,12 +647,13 @@ void NP::redirectData(int ssock, int rsock) {
             for (int i = 0; i < ssockbuffersize; i++) {
                 ssockbuffer[i] = readStr[i];
             }
+            ssockbufempty = false;
 //            strncpy(ssockbuffer, readStr, BUFFER_SIZE);
         }
         
         
-        if (rsockbuffer[0] == '\0' && FD_ISSET(rsock, &rfds)) {
-            NP::log("toCheck0 = " + to_string(toCheck)+" :: 3\n");
+        if (rsockbufempty && FD_ISSET(rsock, &rfds)) {
+//            NP::log("toCheck0 = " + to_string(toCheck)+" :: 3\n");
 
             rsockbuffersize = NP::readWrapper(rsock);
             char* readStr = buffer;
@@ -656,27 +661,29 @@ void NP::redirectData(int ssock, int rsock) {
             for (int i = 0; i < rsockbuffersize; i++) {
                 rsockbuffer[i] = readStr[i];
             }
-            
+            rsockbufempty = false;
 //            strncpy(rsockbuffer, readStr, BUFFER_SIZE);
         }
         
         toCheck = select(nfds, NULL, &wfds, NULL, &timeout);
-                NP::log("toCheck1 = " + to_string(toCheck)+"\n");
+//                NP::log("toCheck1 = " + to_string(toCheck)+"\n");
         if (toCheck == 0) {
             break;
         }
         
-        if (ssockbuffer[0] != '\0' && FD_ISSET(rsock, &wfds)) {
-            NP::log("toCheck1 = " + to_string(toCheck)+" :: 2\n");
+        if (!ssockbufempty && FD_ISSET(rsock, &wfds)) {
+//            NP::log("toCheck1 = " + to_string(toCheck)+" :: 2\n");
             NP::writeWrapper(rsock, ssockbuffer, ssockbuffersize);
             bzero(ssockbuffer, BUFFER_SIZE);
+            ssockbufempty = true;
         }
 
         
-        if (rsockbuffer[0] != '\0' && FD_ISSET(ssock, &wfds)) {
-            NP::log("toCheck1 = " + to_string(toCheck)+" :: 4\n");
+        if (!rsockbufempty && FD_ISSET(ssock, &wfds)) {
+//            NP::log("toCheck1 = " + to_string(toCheck)+" :: 4\n");
             NP::writeWrapper(ssock, rsockbuffer, rsockbuffersize);
             bzero(rsockbuffer, BUFFER_SIZE);
+            rsockbufempty = true;
         }
     }
     
