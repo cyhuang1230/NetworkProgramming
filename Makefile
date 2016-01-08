@@ -29,6 +29,8 @@ hw3_2_debug:
 hw4_server:
         $(CC) NP_project4_Server.cpp $(CXXFLAGS) $(DEBUG_FLAGS) -o np_hw4 -g 
 
-
+hw4_cgi:
+        $(CC) NP_project4_CGI.cpp $(CXXFLAGS) $(DEBUG_FLAGS) -o public_html/hw4.cgi -g 
+        
 clean:
 	rm np_*
