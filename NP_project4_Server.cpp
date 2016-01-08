@@ -1,7 +1,21 @@
-//  NCTU CS. Network Programming Assignment 2
+//  NCTU CS. Network Programming Assignment 4 SOCKS4 Server
 
 //  Code by Denny Chien-Yu Huang, 01/02/16.
 //  Github: https://cyhuang1230.github.io/
+
+/**
+ *	Main idea:
+ *      - CONNECT mode:
+ *          accept -> read SOCKS req -> check firewall rules ->
+ *              connect to dest host -> send SOCKS reply -> redirect data
+ *      - BIND mode:
+ *          accept -> read SOCKS req -> check firewall rules ->
+ *              bind socket -> listen -> send SOCKS reply -> 
+ *              accpet from server -> send SOCKS reply (to original client) -> redirect data
+ *      - When redirect data, should avoid using `strncpy` since it may contain `'\0'` in data,
+ *          which occasionally leads to data error (less bytes are copied than expected).
+ *      - When `bind` with system-assigned port, give `0` to `sockaddr_in.sin_port`.
+ */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -99,36 +113,6 @@ namespace NP {
 		bzero(buffer, BUFFER_SIZE);
 	}
 	
-//    void writeWrapper(int sockfd, const char buffer[], size_t size) {
-//
-//        size_t bytesWritten = 0;
-//        size_t bytesToWrite = size;
-//        if (bytesToWrite == BUFFER_SIZE) {
-//            bytesToWrite = strlen(buffer);
-//        }
-//
-//#ifdef DEBUG
-//        NP::log("write(size = " + to_string(size) + "[given], " + to_string(bytesToWrite) + "[calculated], via fd " + to_string(sockfd) +"): \n" + string(buffer));
-//        for (int i = 0; i < bytesToWrite; i++) {
-//            printf("buffer[%d] = %u\n", i, (unsigned char)buffer[i]);
-//        }
-//#endif
-//
-//        // in case write doesn't successful in one time
-//        while (bytesWritten < bytesToWrite) {
-//            
-//            int n = write(sockfd, buffer + bytesWritten, size - bytesWritten);
-//            
-//            NP::log("  written(n = " + to_string(n) + ", total: " + to_string(n+bytesWritten) + "/" + to_string(bytesToWrite) +")");
-//            
-//            if (n < 0) {
-//                NP::err("write error: " + string(buffer));
-//            }
-//            
-//            bytesWritten += n;
-//        }
-//    }
-
     void writeWrapper(int sockfd, const char buffer[], size_t size) {
         
        ssize_t n = write(sockfd, buffer, size);
@@ -313,10 +297,8 @@ void NP::processRequest(int ssock) {
     
     char socksreq[262];
     memcpy(socksreq, buffer, 262);
-//    for (int i = 0; i < 8; i++) {
-//        printf("sockreq[%d] = %u\n", i, (unsigned char)sockreq[i]);
-//    }
-    if (socksreq[0] != 4) {
+    
+    if (socksreq[0] != 4) { // wrong version
         return;
     }
     
@@ -325,7 +307,7 @@ void NP::processRequest(int ssock) {
     unsigned short dst_port;
     char dst_ip[INET_ADDRSTRLEN];
     char user_id[MAX_USER_ID_LEN+1];
-//    char domain_name[MAX_DOMAIN_NAME_LEN+1];
+//    char domain_name[MAX_DOMAIN_NAME_LEN+1];  // no need to handle domain name
     
     // decapsulate the damn port the way it encapsulated
     dst_port = (unsigned short) ntohs(*(unsigned short*)&socksreq[2]);
@@ -424,7 +406,6 @@ void NP::processRequest(int ssock) {
 
             NP::log("[SOCKS_BIND]sent socks response, waiting for connections...");
 
-//            while (1) {
             
             ftpcli_len = sizeof(ftpcli_addr);
             int newbindsock = ::accept(bindsock, (struct sockaddr *) &ftpcli_addr, &ftpcli_len);
@@ -458,7 +439,6 @@ void NP::processRequest(int ssock) {
             log(buffer);
             
             close(newbindsock);
-//            }
             
             break;
         }
@@ -633,13 +613,11 @@ void NP::redirectData(int ssock, int rsock) {
         memcpy(&wfds, &ws, sizeof(wfds));
 
         toCheck = select(nfds, &rfds, NULL, NULL, &timeout);
-//        NP::log("toCheck0 = " + to_string(toCheck)+"\n");
         if (toCheck == 0) {
             break;
         }
 
         if (ssockbufempty && FD_ISSET(ssock, &rfds)) {
-//            NP::log("toCheck0 = " + to_string(toCheck)+" :: 1\n");
 
             ssockbuffersize = NP::readWrapper(ssock);
             char* readStr = buffer;
@@ -653,7 +631,6 @@ void NP::redirectData(int ssock, int rsock) {
         
         
         if (rsockbufempty && FD_ISSET(rsock, &rfds)) {
-//            NP::log("toCheck0 = " + to_string(toCheck)+" :: 3\n");
 
             rsockbuffersize = NP::readWrapper(rsock);
             char* readStr = buffer;
@@ -666,13 +643,11 @@ void NP::redirectData(int ssock, int rsock) {
         }
         
         toCheck = select(nfds, NULL, &wfds, NULL, &timeout);
-//                NP::log("toCheck1 = " + to_string(toCheck)+"\n");
         if (toCheck == 0) {
             break;
         }
         
         if (!ssockbufempty && FD_ISSET(rsock, &wfds)) {
-//            NP::log("toCheck1 = " + to_string(toCheck)+" :: 2\n");
             NP::writeWrapper(rsock, ssockbuffer, ssockbuffersize);
             bzero(ssockbuffer, BUFFER_SIZE);
             ssockbufempty = true;
@@ -680,20 +655,11 @@ void NP::redirectData(int ssock, int rsock) {
 
         
         if (!rsockbufempty && FD_ISSET(ssock, &wfds)) {
-//            NP::log("toCheck1 = " + to_string(toCheck)+" :: 4\n");
             NP::writeWrapper(ssock, rsockbuffer, rsockbuffersize);
             bzero(rsockbuffer, BUFFER_SIZE);
             rsockbufempty = true;
         }
     }
-    
-    
-    
-    
-//    char* redirectData = NULL;
-//    while ((redirectData = NP::readWrapper(rsock)) != NULL) {
-//        NP::writeWrapper(ssock, redirectData, strlen(redirectData));
-//    }
-    
+
 
 }

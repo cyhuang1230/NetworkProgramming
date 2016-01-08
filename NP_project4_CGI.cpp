@@ -1,4 +1,4 @@
-//  NCTU CS. Network Programming Assignment 4 CGI
+//  NCTU CS. Network Programming Assignment 4 CGI supprting SOCKS4 proxy
 //  CGI. Please refer to hw3spec.txt for more details.
 
 //  Code by Denny Chien-Yu Huang, 12/31/15.
@@ -6,18 +6,7 @@
 
 /**
  *	Main idea:
- *      - Write may fail. Write a wrapper class to handle this.
- *      - Parsing query string needs to be handled carefully.
- *      - Since we're client now, doesn't matter which port to use, i.e. no need to `bind` anymore!
- *      - Try using `flag`(bitwise comparison) instead of individually specifying each property in `log` function.
- *      - Output recerived from servers should be handled(e.g. `\n`, `<`, `>`, `&`, `'`, '\"')
- *          since JavaScript has different escape characters than C. Also, the order of processing characters matters.
- *      - Most importantly, non-blocking client design.
- *          [1] `connect` may be blocked due to slow connection.
- *              => Set `O_NONBLOCK` to sockfd
- *          [2] client program may block (e.g. `sleep`)
- *              => Don't wait for response (i.e. `read`) after `write` to server; 
- *                  instead, use `select` to check when the response is ready to `read`.
+ *      - Same as HW3. Just need to send SOCK4 requset and handle SOCK4 reply.
  */
 
 #include <iostream>
@@ -546,28 +535,11 @@ void NP::Client::sentSockReq() {
     }
     socksreq[8] = '\0';
     
-//        for (int i = 0; i < 8; i++) {
-//            sprintf(buffer, "socksreq[%d] = %u\n", i, (unsigned char)socksreq[i]);
-//            this->print(buffer, IS_LOG | NEED_NEWLINE);  // log
-//        }
-
     NP::writeWrapper(this->sockfd, socksreq, 9);
     
     this->sentSocksReqFlag = true;
 }
 
-//bool NP::Client::handleSockResp() {
-//    
-//    NP::readWrapper(this->sockfd);
-//    
-//    if (buffer[0] != 0 || buffer[1] != 0x5A) {
-//        this->print("[SOCKS Server] Connection refused (" +to_string(buffer[0]) + "," + to_string(buffer[1]) + ")\n");
-//        return false;
-//    }
-//    
-//    this->handledSocksRespFlag = true;
-//    return true;
-//}
 
 /// MISC
 void NP::print(string domId, string msg, int flag) {
